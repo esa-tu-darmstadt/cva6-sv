@@ -124,6 +124,11 @@ ${CVA6_REPO_DIR}/core/serdiv.sv
 ${CVA6_REPO_DIR}/core/perf_counters.sv
 ${CVA6_REPO_DIR}/core/ariane_regfile_ff.sv
 ${CVA6_REPO_DIR}/core/ariane_regfile_fpga.sv
+${CVA6_REPO_DIR}/core/scaiev_config.sv
+${CVA6_REPO_DIR}/core/scaiev_types.sv
+${CVA6_REPO_DIR}/core/scaiev_glue.sv
+${CVA6_REPO_DIR}/core/cva6_glue_wrapper.sv
+${CVA6_REPO_DIR}/core/scaiev_fu.sv
 // NOTE: scoreboard.sv modified for DSIM (unchanged for other simulators)
 ${CVA6_REPO_DIR}/core/scoreboard.sv
 ${CVA6_REPO_DIR}/core/round_interval.sv

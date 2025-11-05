@@ -48,6 +48,9 @@ module instr_queue
 #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
     parameter type fetch_entry_t = logic
+    `ifdef SCAIEV_ZOL
+    ,parameter INSTRQUEUE_ID_WIDTH = 1
+    `endif
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
@@ -86,6 +89,17 @@ module instr_queue
     output logic [ariane_pkg::SUPERSCALAR:0] fetch_entry_valid_o,
     // Handshake’s ready with ID_STAGE - ID_STAGE
     input logic [ariane_pkg::SUPERSCALAR:0] fetch_entry_ready_i
+
+    `ifdef SCAIEV_ZOL
+    ,output logic [INSTRQUEUE_ID_WIDTH-1:0] scaiev_realign_instrqueueID
+    ,output logic [INSTRQUEUE_ID_WIDTH-1:0] scaiev_decode_instrqueueID
+    ,input logic [CVA6Cfg.VLEN-1:0] scaiev_decode_pcOverride
+    ,input logic scaiev_decode_pcOverride_valid
+    `endif
+    `ifdef SCAIEV_ENABLE
+    ,output logic scaiev_realign_isStalling
+    ,output logic scaiev_realign_isFlushing
+    `endif
 );
 
   // Calculate next index based on whether superscalar is enabled or not.
@@ -111,6 +125,10 @@ ariane_pkg::FETCH_FIFO_DEPTH
   logic [             CVA6Cfg.INSTR_PER_FETCH-1:0] pop_instr;
   logic [             CVA6Cfg.INSTR_PER_FETCH-1:0] instr_queue_full;
   logic [             CVA6Cfg.INSTR_PER_FETCH-1:0] instr_queue_empty;
+  `ifdef SCAIEV_ZOL
+  logic [CVA6Cfg.INSTR_PER_FETCH-1:0] [$clog2(ariane_pkg::FETCH_FIFO_DEPTH)-1:0] instr_queue_readAddr;
+  logic [CVA6Cfg.INSTR_PER_FETCH-1:0] [$clog2(ariane_pkg::FETCH_FIFO_DEPTH)-1:0] instr_queue_writeAddr;
+  `endif
   logic                                            instr_overflow;
   // address queue
   logic [$clog2(ariane_pkg::FETCH_FIFO_DEPTH)-1:0] address_queue_usage;
@@ -234,6 +252,10 @@ ariane_pkg::FETCH_FIFO_DEPTH
       end
       /* verilator lint_on WIDTH */
     end
+    `ifdef SCAIEV_ZOL
+    //The address into and ID of the queue where instr_i[0] is written to.
+    assign scaiev_realign_instrqueueID = {instr_queue_writeAddr[idx_is_q], idx_is_q};
+    `endif
   end else begin : gen_multiple_instr_per_fetch_without_C
 
     assign taken = '0;
@@ -270,8 +292,16 @@ ariane_pkg::FETCH_FIFO_DEPTH
       assign instr_data_in[0].ex_tinst = '0;
       assign instr_data_in[0].ex_gva = 1'b0;
     end
+    `ifdef SCAIEV_ZOL
+    //The address into and ID of the queue where instr_i[0] is written to.
+    assign scaiev_realign_instrqueueID = instr_queue_writeAddr[0];
+    `endif
     /* verilator lint_on WIDTH */
   end
+  `ifdef SCAIEV_ENABLE
+  assign scaiev_realign_isStalling = (&(~valid_i | (instr_queue_full & fifo_pos))) | address_overflow;
+  assign scaiev_realign_isFlushing = flush_i | replay_o;
+  `endif
 
   // ----------------------
   // Replay Logic
@@ -326,6 +356,9 @@ ariane_pkg::FETCH_FIFO_DEPTH
       idx_ds_d  = idx_ds_q;
 
       pop_instr = '0;
+      `ifdef SCAIEV_ZOL
+      scaiev_decode_instrqueueID = '0;
+      `endif
       // assemble fetch entry
       for (int unsigned i = 0; i <= ariane_pkg::SUPERSCALAR; i++) begin
         fetch_entry_o[i].instruction = '0;
@@ -365,6 +398,9 @@ ariane_pkg::FETCH_FIFO_DEPTH
           end
           fetch_entry_o[0].branch_predict.cf = instr_data_out[i].cf;
           pop_instr[i] = fetch_entry_fire[0];
+          `ifdef SCAIEV_ZOL
+          scaiev_decode_instrqueueID = {instr_queue_readAddr[i], CVA6Cfg.LOG2_INSTR_PER_FETCH'(i)};
+          `endif
         end
 
         if (ariane_pkg::SUPERSCALAR > 0) begin
@@ -397,7 +433,7 @@ ariane_pkg::FETCH_FIFO_DEPTH
       idx_ds_d = '0;
       idx_is_d = '0;
       fetch_entry_o[0].instruction = instr_data_out[0].instr;
-      fetch_entry_o[0].address = pc_q;
+      fetch_entry_o[0].address = pc_j[0];
 
       fetch_entry_o[0].ex.valid = instr_data_out[0].ex != ariane_pkg::FE_NONE;
       if (instr_data_out[0].ex == ariane_pkg::FE_INSTR_ACCESS_FAULT) begin
@@ -435,7 +471,7 @@ ariane_pkg::FETCH_FIFO_DEPTH
   // ----------------------
   // Calculate (Next) PC
   // ----------------------
-  assign pc_j[0] = pc_q;
+  assign pc_j[0] = `ifdef SCAIEV_ZOL scaiev_decode_pcOverride_valid ? scaiev_decode_pcOverride : `endif pc_q;
   for (genvar i = 0; i <= ariane_pkg::SUPERSCALAR; i++) begin
     assign pc_j[i+1] = fetch_entry_is_cf[i] ? address_out : (
       pc_j[i] + ((fetch_entry_o[i].instruction[1:0] != 2'b11) ? 'd2 : 'd4)
@@ -443,7 +479,7 @@ ariane_pkg::FETCH_FIFO_DEPTH
   end
 
   always_comb begin
-    pc_d = pc_q;
+    pc_d = pc_j[0];
     reset_address_d = flush_i ? 1'b1 : reset_address_q;
 
     if (fetch_entry_fire[0]) begin
@@ -483,6 +519,10 @@ ariane_pkg::FETCH_FIFO_DEPTH
         .push_i    (push_instr_fifo[i]),
         .data_o    (instr_data_out[i]),
         .pop_i     (pop_instr[i])
+      `ifdef SCAIEV_ZOL
+        ,.write_pointer_o(instr_queue_writeAddr[i])
+        ,.read_pointer_o (instr_queue_readAddr[i])
+      `endif
     );
   end
   // or reduce and check whether we are retiring a taken branch (might be that the corresponding)

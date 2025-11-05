@@ -293,6 +293,8 @@ end
 // pragma translate_off
 initial begin
   // these are the LUT limits
+  assert(OutWidth > 0) else
+    $fatal(1,"OutWidth must be greater 0.");
   assert(OutWidth <= LfsrWidth) else
     $fatal(1,"OutWidth must be smaller equal the LfsrWidth.");
   assert(RstVal > unsigned'(0)) else

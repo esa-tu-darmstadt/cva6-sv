@@ -45,6 +45,15 @@ module branch_unit #(
     output bp_resolve_t resolved_branch_o,
     // Branch is resolved, new entries can be accepted by scoreboard - ID_STAGE
     output logic resolve_branch_o,
+    `ifdef SCAIEV_BRANCH
+    input logic scaiev_execute_isBranch,
+    input logic scaiev_execute_branch_isTaken,
+    `endif
+
+    `ifdef SCAIEV_JUMP
+    input logic scaiev_execute_isJump,
+    input logic [riscv::VLEN-1:0] scaiev_execute_jumpAddress,
+    `endif
     // Branch exception out - TO_BE_COMPLETED
     output exception_t branch_exception_o
 );

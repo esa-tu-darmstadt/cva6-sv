@@ -44,12 +44,17 @@ module store_unit
     input logic commit_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     output logic commit_ready_o,
+    // Speculative store queue is empty (SCAIE-V) - EX_STAGE
+    output logic commit_speculative_empty_o,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input logic amo_valid_commit_i,
     // Store result is valid - ISSUE_STAGE
     output logic valid_o,
     // Transaction ID - ISSUE_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_o,
+    `ifdef SCAIEV_MEM
+    output logic has_trans_id_o,
+    `endif
     // Store result - ISSUE_STAGE
     output logic [CVA6Cfg.XLEN-1:0] result_o,
     // Store exception output - TO_BE_COMPLETED
@@ -130,6 +135,9 @@ module store_unit
   logic [1:0] st_data_size_n, st_data_size_q;
   amo_t amo_op_d, amo_op_q;
 
+  `ifdef SCAIEV_MEM
+  logic has_trans_id_n, has_trans_id_q;
+  `endif
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_n, trans_id_q;
 
   // output assignments
@@ -138,6 +146,9 @@ module store_unit
   assign hlvx_inst_o     = CVA6Cfg.RVH ? lsu_ctrl_i.hlvx_inst : 1'b0;
   assign tinst_o         = CVA6Cfg.RVH ? lsu_ctrl_i.tinst : '0;  // transformed instruction
   assign trans_id_o      = trans_id_q;  // transaction id from previous cycle
+  `ifdef SCAIEV_MEM
+  assign has_trans_id_o  = has_trans_id_q;
+  `endif
 
   always_comb begin : store_control
     translation_req_o      = 1'b0;
@@ -146,6 +157,9 @@ module store_unit
     st_valid_without_flush = 1'b0;
     pop_st_o               = 1'b0;
     ex_o                   = ex_i;
+    `ifdef SCAIEV_MEM
+    has_trans_id_n         = lsu_ctrl_i.has_trans_id;
+    `endif
     trans_id_n             = lsu_ctrl_i.trans_id;
     state_d                = state_q;
 
@@ -296,6 +310,7 @@ module store_unit
       .page_offset_matches_o,
       .commit_i,
       .commit_ready_o,
+      .commit_speculative_empty_o,
       .ready_o              (store_buffer_ready),
       .valid_i              (store_buffer_valid),
       // the flush signal can be critical and we need this valid
@@ -309,6 +324,9 @@ module store_unit
       .data_i               (st_data_q),
       .be_i                 (st_be_q),
       .data_size_i          (st_data_size_q),
+      `ifdef SCAIEV_MEM
+      .unordered_i(!has_trans_id_q),
+      `endif
       .req_port_i           (req_port_i),
       .req_port_o           (req_port_o)
   );
@@ -347,6 +365,9 @@ module store_unit
       st_data_size_q <= '0;
       trans_id_q     <= '0;
       amo_op_q       <= AMO_NONE;
+      `ifdef SCAIEV_MEM
+      has_trans_id_q <= 1'b0;
+      `endif
     end else begin
       state_q        <= state_d;
       st_be_q        <= st_be_n;
@@ -354,6 +375,9 @@ module store_unit
       trans_id_q     <= trans_id_n;
       st_data_size_q <= st_data_size_n;
       amo_op_q       <= amo_op_d;
+      `ifdef SCAIEV_MEM
+      has_trans_id_q <= has_trans_id_n;
+      `endif
     end
   end
 

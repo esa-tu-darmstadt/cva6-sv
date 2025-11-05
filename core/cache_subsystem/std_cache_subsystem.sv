@@ -24,6 +24,9 @@ module std_cache_subsystem
     parameter type icache_arsp_t = logic,
     parameter type icache_dreq_t = logic,
     parameter type icache_drsp_t = logic,
+    `ifdef SCAIEV_ZOL
+    parameter type icache_dreqid_t = logic,
+    `endif
     parameter type icache_req_t = logic,
     parameter type icache_rtrn_t = logic,
     parameter type dcache_req_i_t = logic,
@@ -83,6 +86,9 @@ module std_cache_subsystem
       .icache_drsp_t(icache_drsp_t),
       .icache_req_t(icache_req_t),
       .icache_rtrn_t(icache_rtrn_t),
+      `ifdef SCAIEV_ZOL
+      .icache_dreqid_t(icache_dreqid_t),
+      `endif
       .axi_req_t(axi_req_t),
       .axi_rsp_t(axi_rsp_t)
   ) i_cva6_icache_axi_wrapper (

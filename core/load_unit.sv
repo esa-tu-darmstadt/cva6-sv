@@ -27,6 +27,9 @@ module load_unit
     parameter type exception_t = logic,
     parameter type lsu_ctrl_t = logic
 ) (
+    `ifdef SCAIEV_MEM
+    output logic sv_load_result_valid,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -43,6 +46,9 @@ module load_unit
     output logic valid_o,
     // Load transaction ID - TO_BE_COMPLETED
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_o,
+    `ifdef SCAIEV_MEM
+    output logic has_trans_id_o,
+    `endif
     // Load result - TO_BE_COMPLETED
     output logic [CVA6Cfg.XLEN-1:0] result_o,
     // Load exception - TO_BE_COMPLETED
@@ -96,6 +102,10 @@ module load_unit
   // in order to decouple the response interface from the request interface,
   // we need a a buffer which can hold all inflight memory load requests
   typedef struct packed {
+    `ifdef SCAIEV_MEM
+    logic                                isScaiev;
+    logic                                has_trans_id;
+    `endif
     logic [CVA6Cfg.TRANS_ID_BITS-1:0]    trans_id;        // scoreboard identifier
     logic [CVA6Cfg.XLEN_ALIGN_BYTES-1:0] address_offset;  // least significant bits of the address
     fu_op                                operation;       // type of load
@@ -198,7 +208,7 @@ module load_unit
   assign req_port_o.data_wdata = '0;
   // compose the load buffer write data, control is handled in the FSM
   assign ldbuf_wdata = {
-    lsu_ctrl_i.trans_id, lsu_ctrl_i.vaddr[CVA6Cfg.XLEN_ALIGN_BYTES-1:0], lsu_ctrl_i.operation
+    `ifdef SCAIEV_MEM lsu_ctrl_i.isScaiev, lsu_ctrl_i.has_trans_id,`endif lsu_ctrl_i.trans_id, lsu_ctrl_i.vaddr[CVA6Cfg.XLEN_ALIGN_BYTES-1:0], lsu_ctrl_i.operation
   };
   // output address
   // we can now output the lower 12 bit as the index to the cache
@@ -224,7 +234,7 @@ module load_unit
   assign paddr_ni = config_pkg::is_inside_nonidempotent_regions(
       CVA6Cfg, {{52 - CVA6Cfg.PPNW{1'b0}}, dtlb_ppn_i, 12'd0}
   );
-  assign not_commit_time = commit_tran_id_i != lsu_ctrl_i.trans_id;
+  assign not_commit_time = `ifdef SCAIEV_MEM lsu_ctrl_i.has_trans_id && `endif commit_tran_id_i != lsu_ctrl_i.trans_id;
   assign inflight_stores = (!dcache_wbuffer_not_ni_i || !store_buffer_empty_i);
   assign stall_ni = (inflight_stores || not_commit_time) && (paddr_ni && CVA6Cfg.NonIdemPotenceEn);
 
@@ -425,14 +435,27 @@ module load_unit
   always_comb begin : rvalid_output
     //  read the pending load buffer
     ldbuf_r    = req_port_i.data_rvalid;
+    `ifdef SCAIEV_MEM
+    has_trans_id_o = ldbuf_q[ldbuf_rindex].has_trans_id;
+    `endif
     trans_id_o = ldbuf_q[ldbuf_rindex].trans_id;
     valid_o    = 1'b0;
     ex_o.valid = 1'b0;
+    `ifdef SCAIEV_MEM
+    sv_load_result_valid = 0;
+    `endif
 
     // we got an rvalid and it's corresponding request was not flushed
     if (req_port_i.data_rvalid && !ldbuf_flushed_q[ldbuf_rindex]) begin
       // if the response corresponds to the last request, check that we are not killing it
-      if ((ldbuf_last_id_q != ldbuf_rindex) || !req_port_o.kill_req) valid_o = 1'b1;
+      if ((ldbuf_last_id_q != ldbuf_rindex) || !req_port_o.kill_req) begin
+          `ifdef SCAIEV_MEM
+           valid_o = ~ldbuf_rdata.isScaiev;
+           sv_load_result_valid = ldbuf_rdata.isScaiev;
+           `else
+           valid_o = 1'b1;
+           `endif
+      end
       // the output is also valid if we got an exception. An exception arrives one cycle after
       // dtlb_hit_i is asserted, i.e. when we are in SEND_TAG. Otherwise, the exception
       // corresponds to the next request that is already being translated (see below).
@@ -447,6 +470,9 @@ module load_unit
     // so we simply check if we got an rvalid if so we prioritize it by not retiring the exception - we simply go for another
     // round in the load FSM
     if ((CVA6Cfg.MmuPresent || CVA6Cfg.NonIdemPotenceEn) && (state_q == WAIT_TRANSLATION) && !req_port_i.data_rvalid && ex_i.valid && valid_i) begin
+      `ifdef SCAIEV_MEM
+      has_trans_id_o = lsu_ctrl_i.has_trans_id;
+      `endif
       trans_id_o = lsu_ctrl_i.trans_id;
       valid_o = 1'b1;
       ex_o.valid = 1'b1;

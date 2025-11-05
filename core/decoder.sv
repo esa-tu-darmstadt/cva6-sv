@@ -19,10 +19,11 @@
 //              This also includes all the forwarding logic
 //
 
-module decoder
+module decoder_cva6
   import ariane_pkg::*;
 #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    `ifdef SCAIEV_ENABLE parameter type scaiev_instr_decoded_t = logic, `endif
     parameter type branchpredict_sbe_t = logic,
     parameter type exception_t = logic,
     parameter type irq_ctrl_t = logic,
@@ -30,6 +31,19 @@ module decoder
     parameter type interrupts_t = logic,
     parameter interrupts_t INTERRUPTS = '0
 ) (
+    `ifdef SCAIEV_ENABLE
+    output logic [31:0] scaiev_decode_rdInstr,
+    output scaiev_instr_decoded_t scaiev_decode_decInstr,
+    input logic scaiev_decode_isSCAIEV,
+    input logic scaiev_decode_isSCAIEV_hasRS1,
+    input logic scaiev_decode_isSCAIEV_hasRS2,
+    input logic scaiev_decode_isSCAIEV_hasRD,
+    input logic scaiev_decode_isSCAIEV_hasRD_decoupled,
+    input logic scaiev_decode_isBranch,
+    input logic scaiev_decode_isLoad,
+    input logic scaiev_decode_isStore,
+    output logic instr_scaiev_overlap_o,
+    `endif
     // Debug (async) request - SUBSYSTEM
     input logic debug_req_i,
     // PC from fetch stage - FRONTEND
@@ -166,6 +180,9 @@ module decoder
     instruction_o.pc                       = pc_i;
     instruction_o.trans_id                 = '0;
     instruction_o.fu                       = NONE;
+    `ifdef SCAIEV_ENABLE
+    instruction_o.is_scaiev                = 1'b0;
+    `endif
     instruction_o.op                       = ariane_pkg::ADD;
     instruction_o.rs1                      = '0;
     instruction_o.rs2                      = '0;
@@ -182,7 +199,9 @@ module decoder
     ecall                                  = 1'b0;
     ebreak                                 = 1'b0;
     check_fprm                             = 1'b0;
-
+    `ifdef SCAIEV_ENABLE
+    scaiev_decode_rdInstr = instruction_i;
+    `endif
     if (~ex_i.valid) begin
       case (instr.rtype.opcode)
         riscv::OpcodeSystem: begin
@@ -1418,9 +1437,48 @@ module decoder
           instruction_o.rd[4:0] = instr.utype.rd;
         end
 
-        default: illegal_instr = 1'b1;
+        default:
+          illegal_instr = 1'b1;
       endcase
     end
+    `ifdef SCAIEV_ENABLE
+    instr_scaiev_overlap_o = 1'b0;
+    if(scaiev_decode_isSCAIEV) begin
+      instr_scaiev_overlap_o = !is_illegal_i && !illegal_instr;
+      if (illegal_instr) begin
+        imm_select              = NOIMM;
+        is_control_flow_instr_o = 1'b0;
+        illegal_instr           = 1'b0;
+        virtual_illegal_instr   = 1'b0;
+        instruction_o.op        = ariane_pkg::ADD;
+        instruction_o.use_pc    = 1'b0;
+        instruction_o.use_zimm  = 1'b0;
+        instruction_o.vfp       = 1'b0;
+        tinst                   = '0;
+        ecall                   = 1'b0;
+        ebreak                  = 1'b0;
+        check_fprm              = 1'b0;
+        instruction_o.fu       = SCAIEV;
+        instruction_o.is_scaiev = 1'b1;
+        instruction_o.rs1[4:0] = scaiev_decode_isSCAIEV_hasRS1 ? instr.r4type.rs1 : '0;
+        instruction_o.rs2[4:0] = scaiev_decode_isSCAIEV_hasRS2 ? instr.r4type.rs2 : '0;
+        instruction_o.rd[4:0]  = scaiev_decode_isSCAIEV_hasRD ? instr.r4type.rd : '0;
+        `ifdef SCAIEV_BRANCH
+        is_control_flow_instr_o = scaiev_decode_isBranch;
+        `endif
+        case (1'b1)
+          `ifdef SCAIEV_MEM
+          scaiev_decode_isLoad : begin imm_select = IIMM; instruction_o.fu = LOAD; end
+          scaiev_decode_isStore : begin imm_select = SIMM; instruction_o.fu = STORE; end
+          `endif
+          `ifdef SCAIEV_BRANCH
+          scaiev_decode_isBranch : begin imm_select = SBIMM; instruction_o.rd[4:0]  = '0; end
+          `endif
+          default : imm_select = NOIMM;
+        endcase
+      end
+    end
+    `endif
     if (CVA6Cfg.CvxifEn) begin
       if (is_illegal_i || illegal_instr) begin
         instruction_o.fu       = CVXIF;
@@ -1447,6 +1505,18 @@ module decoder
       end
     end
   end
+
+  `ifdef SCAIEV_ENABLE
+  assign scaiev_decode_decInstr.rd = scaiev_decode_isSCAIEV_hasRD_decoupled ? instr.r4type.rd : instruction_o.rd;
+  assign scaiev_decode_decInstr.rd_fpr = CVA6Cfg.FpPresent && ariane_pkg::is_rd_fpr(instruction_o.op);
+  assign scaiev_decode_decInstr.rs1 = instruction_o.rs1;
+  assign scaiev_decode_decInstr.rs1_fpr = CVA6Cfg.FpPresent && ariane_pkg::is_rs1_fpr(instruction_o.op);
+  assign scaiev_decode_decInstr.rs2 = instruction_o.rs2;
+  assign scaiev_decode_decInstr.rs2_fpr = CVA6Cfg.FpPresent && ariane_pkg::is_rs2_fpr(instruction_o.op);
+  assign scaiev_decode_decInstr.rs3 = instr.r4type.rs3;
+  assign scaiev_decode_decInstr.rs3_valid = imm_select == RS3;
+  assign scaiev_decode_decInstr.rs3_fpr = CVA6Cfg.FpPresent && ariane_pkg::is_imm_fpr(instruction_o.op);
+  `endif
 
   // --------------------------------
   // Sign extend immediate
@@ -1489,7 +1559,11 @@ module decoder
       end
       SBIMM: begin
         instruction_o.result  = imm_sb_type;
+        `ifdef SCAIEV_BRANCH
+        instruction_o.use_imm = ~scaiev_decode_isBranch;
+        `else
         instruction_o.use_imm = 1'b1;
+        `endif
       end
       UIMM: begin
         instruction_o.result  = imm_u_type;
@@ -1535,8 +1609,10 @@ module decoder
     if (~ex_i.valid) begin
       // if we didn't already get an exception save the instruction here as we may need it
       // in the commit stage if we got a access exception to one of the CSR registers
+      `ifndef SCAIEV_ENABLE
       if (CVA6Cfg.CvxifEn || CVA6Cfg.RVF)
-        orig_instr_o = (is_compressed_i) ? {{CVA6Cfg.XLEN-16{1'b0}}, compressed_instr_i} : {{CVA6Cfg.XLEN-32{1'b0}}, instruction_i};
+      `endif
+        orig_instr_o = (is_compressed_i) ? {{16{1'b0}}, compressed_instr_i} : {instruction_i};
       if (CVA6Cfg.TvalEn)
         instruction_o.ex.tval  = (is_compressed_i) ? {{CVA6Cfg.XLEN-16{1'b0}}, compressed_instr_i} : {{CVA6Cfg.XLEN-32{1'b0}}, instruction_i};
       else instruction_o.ex.tval = '0;

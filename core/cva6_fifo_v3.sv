@@ -33,7 +33,12 @@ module cva6_fifo_v3 #(
     // as long as the queue is not empty we can pop new elements
     output dtype                  data_o,      // output data
     input  logic                  pop_i        // pop head from queue
+    `ifdef SCAIEV_ZOL
+    , output logic [ADDR_DEPTH-1:0] read_pointer_o // read pointer (corresponding to pop)
+    , output logic [ADDR_DEPTH-1:0] write_pointer_o // write pointer (corresponding to push)
+    `endif
 );
+
   // local parameter
   // FIFO depth - handle the case of pass-through, synthesizer will do constant propagation
   localparam int unsigned FifoDepth = (DEPTH > 0) ? DEPTH : 1;
@@ -167,6 +172,11 @@ module cva6_fifo_v3 #(
       end
     end
   end
+
+`ifdef SCAIEV_ZOL
+  assign read_pointer_o = read_pointer_q;
+  assign write_pointer_o = write_pointer_q;
+`endif
 
   // pragma translate_off
 `ifndef VERILATOR

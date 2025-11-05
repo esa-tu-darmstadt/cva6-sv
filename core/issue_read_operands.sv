@@ -57,6 +57,22 @@ module issue_read_operands
     input rs3_len_t [SUPERSCALAR:0] rs3_i,
     // rs3 operand is valid - scoreboard
     input logic [SUPERSCALAR:0] rs3_valid_i,
+    //SCAIE-V
+    `ifdef SCAIEV_ENABLE
+    output logic [SUPERSCALAR:0]    sv_valid_o,
+    input  logic                    sv_ready_i,
+    output logic [31:0]             sv_off_instr_o,
+    output logic                    scaiev_issue_isValid,
+    output logic                    scaiev_issue_pipeinto_scaievfu,
+    output logic                    scaiev_issue_isStalling,
+    output logic [CVA6Cfg.VLEN-1:0] scaiev_issue_PC,
+    input  logic [SUPERSCALAR:0]    scaiev_issue_stall,
+    output logic [31:0]             scaiev_issue_rdInstr,
+    output logic [CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS1,
+    output logic [CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS2,
+    output logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_issue_trans_id_o,
+    input  logic                    scaiev_issue_mem_stall,
+    `endif
     // get clobber input
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     input fu_t [2**REG_ADDR_SIZE-1:0] rd_clobber_gpr_i,
@@ -64,6 +80,9 @@ module issue_read_operands
     input fu_t [2**REG_ADDR_SIZE-1:0] rd_clobber_fpr_i,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     output fu_data_t [SUPERSCALAR:0] fu_data_o,
+    `ifdef SCAIEV_ENABLE
+    output fu_data_t [SUPERSCALAR:0] sv_fu_data_o,
+    `endif
     // Unregistered version of fu_data_o.operanda - TO_BE_COMPLETED
     output logic [SUPERSCALAR:0][CVA6Cfg.XLEN-1:0] rs1_forwarding_o,
     // Unregistered version of fu_data_o.operandb - TO_BE_COMPLETED
@@ -120,12 +139,13 @@ module issue_read_operands
   localparam OPERANDS_PER_INSTR = CVA6Cfg.NrRgprPorts >> SUPERSCALAR;
 
   typedef struct packed {
-    logic none, load, store, alu, ctrl_flow, mult, csr, fpu, fpu_vec, cvxif, accel;
+    logic none, load, store, alu, ctrl_flow, mult, csr, fpu, fpu_vec, cvxif, accel`ifdef SCAIEV_ENABLE , sv`endif;
   } fus_busy_t;
 
   logic [SUPERSCALAR:0] stall;
   logic [SUPERSCALAR:0] fu_busy;  // functional unit is busy
   fus_busy_t [SUPERSCALAR:0] fus_busy;  // which functional units are considered busy
+  logic [SUPERSCALAR:0] issue_ack_prescaiev; // Issue stage acknowledge, excluding scaiev stall
   // operands coming from regfile
   logic [SUPERSCALAR:0][CVA6Cfg.XLEN-1:0] operand_a_regfile, operand_b_regfile;
   // third operand from fp regfile or gp regfile if NR_RGPR_PORTS == 3
@@ -133,6 +153,9 @@ module issue_read_operands
   rs3_len_t operand_c_fpr;
   // output flipflop (ID <-> EX)
   fu_data_t [SUPERSCALAR:0] fu_data_n, fu_data_q;
+  `ifdef SCAIEV_ENABLE
+  fu_data_t [SUPERSCALAR:0] sv_fu_data_q;
+  `endif
   logic [CVA6Cfg.XLEN-1:0] imm_forward_rs3;
 
   logic [   SUPERSCALAR:0] alu_valid_q;
@@ -155,6 +178,19 @@ module issue_read_operands
   riscv::instruction_t orig_instr;
   assign orig_instr = riscv::instruction_t'(orig_instr_i[0]);
 
+  `ifdef SCAIEV_ENABLE
+  logic [SUPERSCALAR:0] sv_valid_q;
+  logic [31:0] sv_off_instr_q;
+  assign scaiev_issue_isStalling = !issue_ack_prescaiev;
+  assign scaiev_issue_PC = issue_instr_i[0].pc;
+  assign scaiev_issue_rdRS1 = rs1_forwarding_o[0];
+  assign scaiev_issue_rdRS2 = rs2_forwarding_o[0];
+  assign sv_valid_o       = sv_valid_q;
+  assign sv_off_instr_o   = sv_off_instr_q;
+  assign scaiev_issue_rdInstr = orig_instr;
+  assign scaiev_issue_trans_id_o = issue_instr_i[0].trans_id;
+  `endif
+
   // ID <-> EX registers
 
   for (genvar i = 0; i <= SUPERSCALAR; i++) begin
@@ -163,6 +199,9 @@ module issue_read_operands
   end
 
   assign fu_data_o = fu_data_q;
+  `ifdef SCAIEV_ENABLE
+  assign sv_fu_data_o = sv_fu_data_q;
+  `endif
   assign alu_valid_o = alu_valid_q;
   assign branch_valid_o = branch_valid_q;
   assign lsu_valid_o = lsu_valid_q;
@@ -202,7 +241,7 @@ module issue_read_operands
       fus_busy[0].fpu_vec = 1'b1;
     end
 
-    if (!lsu_ready_i) begin
+    if (!lsu_ready_i `ifdef SCAIEV_ENABLE || scaiev_issue_mem_stall `endif ) begin
       fus_busy[0].load  = 1'b1;
       fus_busy[0].store = 1'b1;
     end
@@ -210,6 +249,9 @@ module issue_read_operands
     if (!cvxif_ready_i) begin
       fus_busy[0].cvxif = 1'b1;
     end
+    `ifdef SCAIEV_ENABLE
+    fus_busy[0].sv = ~sv_ready_i;
+    `endif
 
     if (SUPERSCALAR) begin
       fus_busy[1] = fus_busy[0];
@@ -251,8 +293,15 @@ module issue_read_operands
         LOAD, STORE: begin
           fus_busy[1].load  = 1'b1;
           fus_busy[1].store = 1'b1;
+          `ifdef SCAIEV_ENABLE
+          if (issue_instr_i[0].is_scaiev)
+            fus_busy[1].sv = 1'b1;
+          `endif
         end
         CVXIF: fus_busy[1].cvxif = 1'b1;
+        `ifdef SCAIEV_ENABLE
+        SCAIEV: fus_busy[1].sv = 1'b1;
+        `endif
       endcase
     end
   end
@@ -272,8 +321,15 @@ module issue_read_operands
         LOAD: fu_busy[i] = fus_busy[i].load;
         STORE: fu_busy[i] = fus_busy[i].store;
         CVXIF: fu_busy[i] = fus_busy[i].cvxif;
+        `ifdef SCAIEV_ENABLE
+         SCAIEV: fu_busy[i] = fus_busy[i].sv;
+        `endif
         default: fu_busy[i] = 1'b0;
       endcase
+      `ifdef SCAIEV_ENABLE
+      if (issue_instr_i[i].is_scaiev)
+        fu_busy[i] = fu_busy[i] | fus_busy[i].sv;
+      `endif
     end
   end
 
@@ -283,6 +339,7 @@ module issue_read_operands
   // check that all operands are available, otherwise stall
   // forward corresponding register
   always_comb begin : operands_available
+
     stall = '{default: stall_i};
     // operand forwarding signals
     forward_rs1 = '0;
@@ -434,7 +491,7 @@ module issue_read_operands
       // also make sure operand B is not already used as an FP operand
       if (issue_instr_i[i].use_imm && (issue_instr_i[i].fu != STORE) && (issue_instr_i[i].fu != CTRL_FLOW) && (issue_instr_i[i].fu != ACCEL) && !(CVA6Cfg.FpPresent && is_rs2_fpr(
               issue_instr_i[i].op
-          ))) begin
+          )) `ifdef SCAIEV_ENABLE && !issue_instr_i[i].is_scaiev `endif ) begin
         fu_data_n[i].operand_b = issue_instr_i[i].result;
       end
     end
@@ -477,7 +534,7 @@ module issue_read_operands
               mult_valid_q[i] <= 1'b1;
             end
             LOAD, STORE: begin
-              lsu_valid_q[i] <= 1'b1;
+              lsu_valid_q[i] <= `ifdef SCAIEV_ENABLE !issue_instr_i[i].is_scaiev `else 1'b1 `endif;
             end
             CSR: begin
               csr_valid_q[i] <= 1'b1;
@@ -542,6 +599,7 @@ module issue_read_operands
   always_comb begin : issue_scoreboard
     for (int unsigned i = 0; i <= SUPERSCALAR; i++) begin
       // default assignment
+      issue_ack_prescaiev[i] = 1'b0;
       issue_ack_o[i] = 1'b0;
       // check that we didn't stall, that the instruction we got is valid
       // and that the functional unit we need is not busy
@@ -556,7 +614,8 @@ module issue_read_operands
                   issue_instr_i[i].op
               )) ? (rd_clobber_fpr_i[issue_instr_i[i].rd] == NONE) :
                   (rd_clobber_gpr_i[issue_instr_i[i].rd] == NONE)) begin
-            issue_ack_o[i] = 1'b1;
+            issue_ack_prescaiev[i] = 1'b1;
+            issue_ack_o[i] = `ifdef SCAIEV_ENABLE !scaiev_issue_stall[i] `else 1'b1 `endif ;
           end
           // or check that the target destination register will be written in this cycle by the
           // commit stage
@@ -565,11 +624,13 @@ module issue_read_operands
                     issue_instr_i[i].op
                 )) ? (we_fpr_i[c] && waddr_i[c] == issue_instr_i[i].rd[4:0]) :
                     (we_gpr_i[c] && waddr_i[c] == issue_instr_i[i].rd[4:0])) begin
-              issue_ack_o[i] = 1'b1;
+              issue_ack_prescaiev[i] = 1'b1;
+              issue_ack_o[i] = `ifdef SCAIEV_ENABLE !scaiev_issue_stall[i] `else 1'b1 `endif ;
             end
           end
           if (i > 0) begin
             if ((issue_instr_i[i].rd[4:0] == issue_instr_i[i-1].rd[4:0]) && (issue_instr_i[i].rd[4:0] != '0)) begin
+              issue_ack_prescaiev[i] = 1'b0;
               issue_ack_o[i] = 1'b0;
             end
           end
@@ -580,21 +641,56 @@ module issue_read_operands
         // need any functional unit or if an exception occurred previous to the execute stage.
         // 1. we already got an exception
         if (issue_instr_i[i].ex.valid) begin
+          issue_ack_prescaiev[i] = 1'b1;
           issue_ack_o[i] = 1'b1;
         end
         // 2. it is an instruction which does not need any functional unit
         if (issue_instr_i[i].fu == NONE) begin
+          issue_ack_prescaiev[i] = 1'b1;
           issue_ack_o[i] = 1'b1;
         end
       end
     end
 
     if (SUPERSCALAR) begin
+      if (!issue_ack_prescaiev[0]) begin
+        issue_ack_prescaiev[1] = 1'b0;
+      end
       if (!issue_ack_o[0]) begin
         issue_ack_o[1] = 1'b0;
       end
     end
   end
+  `ifdef SCAIEV_ENABLE
+  assign scaiev_issue_isValid = issue_instr_valid_i[0];
+  always_comb begin
+    scaiev_issue_pipeinto_scaievfu = 0;
+    for (int unsigned i = 0; i <= SUPERSCALAR; i++) begin
+      if (issue_instr_valid_i[i] && issue_ack_prescaiev[i] && issue_instr_i[i].is_scaiev) begin
+        scaiev_issue_pipeinto_scaievfu = 1;
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      sv_valid_q  <= '0;
+      sv_off_instr_q  <= '0;
+    end else begin
+      sv_valid_q  <= '0;
+      for (int unsigned i = 0; i <= SUPERSCALAR; i++) begin
+        if (!issue_instr_i[i].ex.valid && issue_instr_valid_i[i] && issue_ack_o[i] && issue_instr_i[i].is_scaiev) begin
+          sv_valid_q[i] <= 1'b1;
+          sv_off_instr_q <= orig_instr;
+          sv_fu_data_q[i] <= fu_data_n[i];
+        end
+      end
+      if (flush_i) begin
+        sv_valid_q  <= '0;
+      end
+    end
+  end
+  `endif
 
   // ----------------------
   // Integer Register File

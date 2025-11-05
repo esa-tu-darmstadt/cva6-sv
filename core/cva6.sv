@@ -61,8 +61,15 @@ module cva6
     },
 
     // I$ data requests
+    `ifdef SCAIEV_ZOL
+    parameter type icache_dreqid_t = logic,
+    parameter INSTRQUEUE_ID_WIDTH = 1,
+    `endif
     localparam type icache_dreq_t = struct packed {
       logic                    req;      // we request a new word
+      `ifdef SCAIEV_ZOL
+      icache_dreqid_t          reqid;    // associate with an id
+      `endif
       logic                    kill_s1;  // kill the current request
       logic                    kill_s2;  // kill the last request
       logic                    spec;     // request is speculative
@@ -71,6 +78,9 @@ module cva6
     localparam type icache_drsp_t = struct packed {
       logic                                ready;  // icache is ready
       logic                                valid;  // signals a valid read
+      `ifdef SCAIEV_ZOL
+      icache_dreqid_t                      reqid;  // associated id
+      `endif
       logic [CVA6Cfg.FETCH_WIDTH-1:0]      data;   // 2+ cycle out: tag
       logic [CVA6Cfg.FETCH_USER_WIDTH-1:0] user;   // User bits
       logic [CVA6Cfg.VLEN-1:0]             vaddr;  // virtual address out
@@ -92,6 +102,9 @@ module cva6
       logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id;      // this can potentially be simplified, we could index the scoreboard entry
       // with the transaction id in any case make the width more generic
       fu_t fu;  // functional unit to use
+      `ifdef SCAIEV_ENABLE
+      logic is_scaiev; // is a SCAIE-V unit
+      `endif
       fu_op op;  // operation to perform in each functional unit
       logic [REG_ADDR_SIZE-1:0] rs1;  // register source address 1
       logic [REG_ADDR_SIZE-1:0] rs2;  // register source address 2
@@ -139,6 +152,9 @@ module cva6
     },
 
     localparam type lsu_ctrl_t = struct packed {
+      `ifdef SCAIEV_MEM
+      logic                             isScaiev;
+      `endif
       logic                             valid;
       logic [CVA6Cfg.VLEN-1:0]          vaddr;
       logic [31:0]                      tinst;
@@ -150,6 +166,9 @@ module cva6
       logic [(CVA6Cfg.XLEN/8)-1:0]      be;
       fu_t                              fu;
       fu_op                             operation;
+      `ifdef SCAIEV_MEM
+      logic                             has_trans_id;
+      `endif
       logic [CVA6Cfg.TRANS_ID_BITS-1:0] trans_id;
     },
 
@@ -269,12 +288,114 @@ module cva6
       logic    r_valid;
       r_chan_t r;
     },
+    `ifdef SCAIEV_ENABLE parameter type scaiev_instr_decoded_t = logic, `endif
     //
     parameter type acc_cfg_t = logic,
     parameter acc_cfg_t AccCfg = '0,
     parameter type cvxif_req_t = cvxif_pkg::cvxif_req_t,
     parameter type cvxif_resp_t = cvxif_pkg::cvxif_resp_t
 ) (
+    `ifdef SCAIEV_ENABLE
+      output logic [riscv::XLEN-1:0] scaiev_fetch_PC,
+      output logic scaiev_fetch_isStalling,
+      output logic scaiev_fetch_isFlushing,
+      output logic scaiev_fetch_isReplaying,
+      input  logic scaiev_fetch_ignoreReplay,
+      output logic [31:0] scaiev_realign_rdInstr,
+      output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][CVA6Cfg.XLEN-1:0] scaiev_realign_PC,
+      output logic scaiev_realign_isStalling,
+      output logic scaiev_realign_isFlushing,
+      output logic scaiev_decode_isFlushing,
+      output logic scaiev_decode_isStalling,
+      output logic [31:0] scaiev_decode_rdInstr,
+      output scaiev_instr_decoded_t scaiev_decode_decInstr,
+      output logic [4:0] scaiev_decode_instr_rd,
+      output logic scaiev_issue_isFlushing,
+      output logic scaiev_issue_isStalling,
+      output logic scaiev_issue_isValid,
+      output logic scaiev_issue_pipeinto_scaievfu,
+      output logic [CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS1,
+      output logic [CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS2,
+      output logic [31:0] scaiev_issue_rdInstr,
+      output logic [CVA6Cfg.VLEN-1:0] scaiev_issue_PC,
+      output logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_issue_trans_id_o,
+
+      output logic scaiev_scoreboard_isFlushing,
+
+      output logic scaiev_execute_isValid,
+      output logic scaiev_execute_isNew,
+      output logic scaiev_execute_isStalling,
+      input  logic scaiev_execute_stall,
+      input logic scaiev_execute_hasWriteback,
+
+      input logic scaiev_execute_semicoupled_deq,
+      input logic scaiev_execute_semicoupled_reenq,
+      output logic scaiev_execute_isFlushing,
+      output logic [31:0] scaiev_execute_rdInstr,
+      output logic [CVA6Cfg.XLEN-1:0] scaiev_execute_PC,
+      output logic [CVA6Cfg.XLEN-1:0] scaiev_execute_rdRS1,
+      output logic [CVA6Cfg.XLEN-1:0] scaiev_execute_rdRS2,
+      output logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_execute_trans_id_o,
+      output logic [CVA6Cfg.XLEN-1:0] scaiev_execute_rdMem_result,
+      output logic scaiev_execute_rdMem_result_valid,
+      output logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_execute_rdMem_result_trans_id,
+      output logic scaiev_execute_rdMem_result_has_trans_id,
+      output logic [CVA6Cfg.NrCommitPorts-1:0] scaiev_commit_drop,
+      output logic [CVA6Cfg.NrCommitPorts-1:0] scaiev_commit_trans_id_valid,
+      output logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_commit_trans_id,
+      output logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_commit_PC,
+
+      input logic [CVA6Cfg.XLEN-1:0] scaiev_fetch_wrPC,
+      input logic scaiev_fetch_wrPCValid,
+      input logic scaiev_fetch_stall,
+      input logic scaiev_realign_isBranch,
+      input logic scaiev_realign_isJump,
+      //input logic scaiev_realign_isZOLJump,
+      //input logic [63:0] scaiev_realign_jumpAddr,
+      input logic scaiev_decode_flush,
+      input logic scaiev_decode_isSCAIEV,
+      input logic scaiev_decode_isSCAIEV_hasRS1,
+      input logic scaiev_decode_isSCAIEV_hasRS2,
+      input logic scaiev_decode_isSCAIEV_hasRD,
+      input logic scaiev_decode_isSCAIEV_hasRD_decoupled,
+      input logic scaiev_decode_isBranch,
+      input logic scaiev_decode_isLoad,
+      input logic scaiev_decode_isStore,
+      input logic scaiev_issue_stall,
+      input logic scaiev_issue_flush,
+      input  logic scaiev_issue_mem_stall,
+      output logic scaiev_execute_mem_ready,
+      output logic scaiev_execute_lsuvalid, //regular LSU op in Execute
+      input logic scaiev_execute_rdMem_valid,
+      input logic scaiev_execute_wrRD_valid,
+      input logic scaiev_execute_isJump,
+      input logic [CVA6Cfg.VLEN-1:0] scaiev_execute_jumpAddress,
+      input logic [CVA6Cfg.XLEN-1:0] scaiev_execute_wrRD,
+      input logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_execute_trans_id_i,
+      input logic scaiev_execute_isBranch,
+      input logic scaiev_execute_branch_isTaken,
+      input logic scaiev_execute_wrMem_valid,
+      input logic [CVA6Cfg.XLEN-1:0] scaiev_execute_wrMem,
+      input logic [CVA6Cfg.XLEN-1:0] scaiev_execute_memAddr,
+      input logic [2:0] scaiev_execute_memSize,
+      input logic scaiev_execute_memAddr_valid,
+      input logic scaiev_execute_mem_has_trans_id,
+      input logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_execute_mem_trans_id,
+
+      input logic scaiev_writeback_spawn_valid,
+      input logic [CVA6Cfg.XLEN-1:0] scaiev_writeback_spawn_data,
+      input logic [4:0] scaiev_writeback_spawn_addr,
+    `endif
+    `ifdef SCAIEV_ZOL
+      output icache_dreqid_t scaiev_fetch_reqID,
+      output icache_dreqid_t scaiev_realign_reqID,
+      output icache_dreqid_t scaiev_fetch_reqID_flushFrom,
+      output logic [$bits(icache_dreqid_t):0] scaiev_fetch_reqID_flushCount,
+      output logic [INSTRQUEUE_ID_WIDTH-1:0] scaiev_realign_instrqueueID,
+      output logic [INSTRQUEUE_ID_WIDTH-1:0] scaiev_decode_instrqueueID,
+      input logic [CVA6Cfg.VLEN-1:0] scaiev_decode_pcOverride,
+      input logic scaiev_decode_pcOverride_valid,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -374,6 +495,9 @@ module cva6
   logic [SUPERSCALAR:0][CVA6Cfg.VLEN-1:0] rs2_forwarding_id_ex;  // unregistered version of fu_data_o.operandb
 
   fu_data_t [SUPERSCALAR:0] fu_data_id_ex;
+  `ifdef SCAIEV_ENABLE
+  fu_data_t [SUPERSCALAR:0] sv_fu_data_id_ex;
+  `endif
   logic [CVA6Cfg.VLEN-1:0] pc_id_ex;
   logic is_compressed_instr_id_ex;
   logic [SUPERSCALAR:0][31:0] tinst_ex;
@@ -394,11 +518,17 @@ module cva6
   logic [SUPERSCALAR:0] lsu_valid_id_ex;
   logic lsu_ready_ex_id;
 
+  `ifdef SCAIEV_MEM
+  logic load_has_trans_id_ex_id;
+  `endif
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] load_trans_id_ex_id;
   logic [CVA6Cfg.XLEN-1:0] load_result_ex_id;
   logic load_valid_ex_id;
   exception_t load_exception_ex_id;
 
+  `ifdef SCAIEV_MEM
+  logic store_has_trans_id_ex_id;
+  `endif
   logic [CVA6Cfg.XLEN-1:0] store_result_ex_id;
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] store_trans_id_ex_id;
   logic store_valid_ex_id;
@@ -438,6 +568,17 @@ module cva6
   logic [SUPERSCALAR:0] x_issue_valid_id_ex;
   logic x_issue_ready_ex_id;
   logic [31:0] x_off_instr_id_ex;
+  `ifdef SCAIEV_ENABLE
+  // SCAIE-V
+  logic [CVA6Cfg.TRANS_ID_BITS-1:0] sv_trans_id_ex_id;
+  logic [CVA6Cfg.XLEN-1:0]  sv_result_ex_id;
+  logic                     sv_valid_ex_id;
+  exception_t               sv_exception_ex_id;
+  logic                     sv_we_ex_id;
+  logic [SUPERSCALAR:0]     sv_issue_valid_id_ex;
+  logic                     sv_issue_ready_ex_id;
+  logic [31:0]              sv_off_instr_id_ex;
+  `endif
   // --------------
   // EX <-> COMMIT
   // --------------
@@ -448,6 +589,7 @@ module cva6
   // LSU Commit
   logic lsu_commit_commit_ex;
   logic lsu_commit_ready_ex_commit;
+  logic lsu_commit_speculative_empty;
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] lsu_commit_trans_id;
   logic stall_st_pending_ex;
   logic no_st_pending_ex;
@@ -598,6 +740,10 @@ module cva6
       .fetch_entry_t(fetch_entry_t),
       .icache_dreq_t(icache_dreq_t),
       .icache_drsp_t(icache_drsp_t)
+      `ifdef SCAIEV_ZOL
+      ,.icache_dreqid_t(icache_dreqid_t)
+      ,.INSTRQUEUE_ID_WIDTH(INSTRQUEUE_ID_WIDTH)
+      `endif
   ) i_frontend (
       .flush_i            (flush_ctrl_if),                  // not entirely correct
       .flush_bp_i         (1'b0),
@@ -625,6 +771,7 @@ module cva6
   // ---------
   id_stage #(
       .CVA6Cfg(CVA6Cfg),
+      `ifdef SCAIEV_ENABLE .scaiev_instr_decoded_t(scaiev_instr_decoded_t), `endif
       .branchpredict_sbe_t(branchpredict_sbe_t),
       .exception_t(exception_t),
       .fetch_entry_t(fetch_entry_t),
@@ -663,13 +810,16 @@ module cva6
       .tw_i        (tw_csr_id),
       .vtw_i       (vtw_csr_id),
       .tsr_i       (tsr_csr_id),
-      .hu_i        (hu)
+      .hu_i        (hu),
+      .*
   );
 
   logic [CVA6Cfg.NrWbPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] trans_id_ex_id;
   logic [CVA6Cfg.NrWbPorts-1:0][CVA6Cfg.XLEN-1:0] wbdata_ex_id;
   exception_t [CVA6Cfg.NrWbPorts-1:0] ex_ex_ex_id;  // exception from execute, ex_stage to id_stage
   logic [CVA6Cfg.NrWbPorts-1:0] wt_valid_ex_id;
+
+
 
   assign trans_id_ex_id[FLU_WB] = flu_trans_id_ex_id;
   assign wbdata_ex_id[FLU_WB]   = flu_result_ex_id;
@@ -679,12 +829,12 @@ module cva6
   assign trans_id_ex_id[STORE_WB] = store_trans_id_ex_id;
   assign wbdata_ex_id[STORE_WB]   = store_result_ex_id;
   assign ex_ex_ex_id[STORE_WB]    = store_exception_ex_id;
-  assign wt_valid_ex_id[STORE_WB] = store_valid_ex_id;
+  assign wt_valid_ex_id[STORE_WB] = store_valid_ex_id `ifdef SCAIEV_MEM && store_has_trans_id_ex_id `endif ;
 
   assign trans_id_ex_id[LOAD_WB] = load_trans_id_ex_id;
   assign wbdata_ex_id[LOAD_WB]   = load_result_ex_id;
   assign ex_ex_ex_id[LOAD_WB]    = load_exception_ex_id;
-  assign wt_valid_ex_id[LOAD_WB] = load_valid_ex_id;
+  assign wt_valid_ex_id[LOAD_WB] = load_valid_ex_id `ifdef SCAIEV_MEM && load_has_trans_id_ex_id `endif ;
 
   assign trans_id_ex_id[FPU_WB] = fpu_trans_id_ex_id;
   assign wbdata_ex_id[FPU_WB]   = fpu_result_ex_id;
@@ -702,6 +852,16 @@ module cva6
     assign ex_ex_ex_id[ACC_WB]    = acc_exception_ex_id;
     assign wt_valid_ex_id[ACC_WB] = acc_valid_ex_id;
   end
+  `ifdef SCAIEV_ENABLE
+  assign scaiev_execute_isNew = sv_issue_valid_id_ex[0];
+  assign scaiev_execute_isFlushing = flush_ctrl_ex;
+  assign scaiev_execute_PC = pc_id_ex;
+  assign scaiev_scoreboard_isFlushing = flush_ctrl_id;
+  assign trans_id_ex_id[SV_WB] = sv_trans_id_ex_id;
+  assign wbdata_ex_id[SV_WB]   = sv_result_ex_id;
+  assign ex_ex_ex_id[SV_WB]    = sv_exception_ex_id;
+  assign wt_valid_ex_id[SV_WB] = sv_valid_ex_id;
+ `endif
 
   if (CVA6Cfg.CvxifEn && CVA6Cfg.EnableAccelerator) begin : gen_err_xif_and_acc
     $error("X-interface and accelerator port cannot be enabled at the same time.");
@@ -761,6 +921,12 @@ module cva6
       .x_issue_valid_o       (x_issue_valid_id_ex),
       .x_issue_ready_i       (x_issue_ready_ex_id),
       .x_off_instr_o         (x_off_instr_id_ex),
+      `ifdef SCAIEV_ENABLE
+      .sv_fu_data_o          (sv_fu_data_id_ex),
+      .sv_issue_valid_o      (sv_issue_valid_id_ex),
+      .sv_issue_ready_i      (sv_issue_ready_ex_id),
+      .sv_off_instr_o        (sv_off_instr_id_ex),
+      `endif
       // Accelerator
       .issue_instr_o         (issue_instr_id_acc),
       .issue_instr_hs_o      (issue_instr_hs_id_acc),
@@ -840,16 +1006,23 @@ module cva6
 
       .load_result_o   (load_result_ex_id),
       .load_trans_id_o (load_trans_id_ex_id),
+      `ifdef SCAIEV_MEM
+      .load_has_trans_id_o (load_has_trans_id_ex_id),
+      `endif
       .load_valid_o    (load_valid_ex_id),
       .load_exception_o(load_exception_ex_id),
 
       .store_result_o   (store_result_ex_id),
       .store_trans_id_o (store_trans_id_ex_id),
+      `ifdef SCAIEV_MEM
+      .store_has_trans_id_o (store_has_trans_id_ex_id),
+      `endif
       .store_valid_o    (store_valid_ex_id),
       .store_exception_o(store_exception_ex_id),
 
       .lsu_commit_i            (lsu_commit_commit_ex),           // from commit
       .lsu_commit_ready_o      (lsu_commit_ready_ex_commit),     // to commit
+      .lsu_commit_speculative_empty_o (lsu_commit_speculative_empty), //to commit (SCAIE-V)
       .commit_tran_id_i        (lsu_commit_trans_id),            // from commit
       .stall_st_pending_i      (stall_st_pending_ex),
       .no_st_pending_o         (no_st_pending_ex),
@@ -878,6 +1051,17 @@ module cva6
       .x_we_o                  (x_we_ex_id),
       .cvxif_req_o             (cvxif_req),
       .cvxif_resp_i            (cvxif_resp),
+      `ifdef SCAIEV_ENABLE
+      .sv_fu_data_i            (sv_fu_data_id_ex),
+      .sv_valid_i              (sv_issue_valid_id_ex),
+      .sv_ready_o              (sv_issue_ready_ex_id),
+      .sv_off_instr_i          (sv_off_instr_id_ex),
+      .sv_trans_id_o           (sv_trans_id_ex_id),
+      .sv_exception_o          (sv_exception_ex_id),
+      .sv_result_o             (sv_result_ex_id),
+      .sv_valid_o              (sv_valid_ex_id),
+      .sv_we_o                 (sv_we_ex_id),
+      `endif
       // Accelerator
       .acc_valid_i             (acc_valid_acc_ex),
       // Performance counters
@@ -917,7 +1101,8 @@ module cva6
       .pmpaddr_i               (pmpaddr),
       //RVFI
       .rvfi_lsu_ctrl_o         (rvfi_lsu_ctrl),
-      .rvfi_mem_paddr_o        (rvfi_mem_paddr)
+      .rvfi_mem_paddr_o        (rvfi_mem_paddr),
+      .*
   );
 
   // ---------
@@ -951,6 +1136,7 @@ module cva6
       .we_fpr_o          (we_fpr_commit_id),
       .commit_lsu_o      (lsu_commit_commit_ex),
       .commit_lsu_ready_i(lsu_commit_ready_ex_commit),
+      .commit_lsu_speculative_empty_i(lsu_commit_speculative_empty),
       .commit_tran_id_o  (lsu_commit_trans_id),
       .amo_valid_commit_o(amo_valid_commit),
       .amo_resp_i        (amo_resp),
@@ -1145,6 +1331,10 @@ module cva6
       .flush_acc_i      (flush_acc),
 
       .flush_icache_o(icache_flush_ctrl_cache),
+      `ifdef SCAIEV_ENABLE
+      .flush_unissued_instr_prescaiev_o(scaiev_issue_isFlushing),
+      .flush_if_prescaiev_o(scaiev_decode_isFlushing),
+      `endif
       .*
   );
 
@@ -1185,6 +1375,9 @@ module cva6
         .icache_arsp_t(icache_arsp_t),
         .icache_dreq_t(icache_dreq_t),
         .icache_drsp_t(icache_drsp_t),
+        `ifdef SCAIEV_ZOL
+        .icache_dreqid_t(icache_dreqid_t),
+        `endif
         .icache_req_t(icache_req_t),
         .icache_rtrn_t(icache_rtrn_t),
         .dcache_req_i_t(dcache_req_i_t),
@@ -1233,6 +1426,9 @@ module cva6
         .icache_arsp_t(icache_arsp_t),
         .icache_dreq_t(icache_dreq_t),
         .icache_drsp_t(icache_drsp_t),
+        `ifdef SCAIEV_ZOL
+        .icache_dreqid_t(icache_dreqid_t),
+        `endif
         .icache_req_t(icache_req_t),
         .icache_rtrn_t(icache_rtrn_t),
         .dcache_req_i_t(dcache_req_i_t),
@@ -1301,6 +1497,9 @@ module cva6
         .icache_arsp_t (icache_arsp_t),
         .icache_dreq_t (icache_dreq_t),
         .icache_drsp_t (icache_drsp_t),
+        `ifdef SCAIEV_ZOL
+        .icache_dreqid_t(icache_dreqid_t),
+        `endif
         .icache_req_t  (icache_req_t),
         .icache_rtrn_t (icache_rtrn_t),
         .dcache_req_i_t(dcache_req_i_t),

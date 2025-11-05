@@ -13,8 +13,10 @@
 // Description: Instruction decode, contains the logic for decode,
 //              issue and read operands.
 
+
 module id_stage #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    `ifdef SCAIEV_ENABLE parameter type scaiev_instr_decoded_t = logic, `endif
     parameter type branchpredict_sbe_t = logic,
     parameter type exception_t = logic,
     parameter type fetch_entry_t = logic,
@@ -23,6 +25,21 @@ module id_stage #(
     parameter type interrupts_t = logic,
     parameter interrupts_t INTERRUPTS = '0
 ) (
+    `ifdef SCAIEV_ENABLE
+    output logic scaiev_decode_isStalling,
+    output logic [31:0] scaiev_decode_rdInstr,
+    output scaiev_instr_decoded_t scaiev_decode_decInstr,
+    output logic [4:0] scaiev_decode_instr_rd,
+
+    input logic scaiev_decode_isSCAIEV,
+    input logic scaiev_decode_isSCAIEV_hasRS1,
+    input logic scaiev_decode_isSCAIEV_hasRS2,
+    input logic scaiev_decode_isSCAIEV_hasRD,
+    input logic scaiev_decode_isSCAIEV_hasRD_decoupled,
+    input logic scaiev_decode_isBranch,
+    input logic scaiev_decode_isLoad,
+    input logic scaiev_decode_isStore,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -101,6 +118,10 @@ module id_stage #(
   logic                                                stall_instr_fetch;
   logic                                                is_last_macro_instr_o;
   logic                                                is_double_rd_macro_instr_o;
+  `ifdef SCAIEV_ENABLE
+  logic [ariane_pkg::SUPERSCALAR:0] instr_scaiev_overlap; //set if there is an unexpected encoding overlap (non-SCAIEV vs. SCAIEV)
+  `endif
+
 
   if (CVA6Cfg.RVC) begin
     // ---------------------------------------------------------
@@ -164,8 +185,9 @@ module id_stage #(
   // 2. Decode and emit instruction to issue stage
   // ---------------------------------------------------------
   for (genvar i = 0; i <= ariane_pkg::SUPERSCALAR; i++) begin
-    decoder #(
+    decoder_cva6 #(
         .CVA6Cfg(CVA6Cfg),
+        `ifdef SCAIEV_ENABLE .scaiev_instr_decoded_t(scaiev_instr_decoded_t), `endif
         .branchpredict_sbe_t(branchpredict_sbe_t),
         .exception_t(exception_t),
         .irq_ctrl_t(irq_ctrl_t),
@@ -197,11 +219,24 @@ module id_stage #(
         .tw_i,
         .vtw_i,
         .tsr_i,
+        `ifdef SCAIEV_ENABLE
+        .instr_scaiev_overlap_o(instr_scaiev_overlap[i]),
+        `endif
+        .*,
         .hu_i,
         .instruction_o             (decoded_instruction[i]),
         .orig_instr_o              (orig_instr[i]),
         .is_control_flow_instr_o   (is_control_flow_instr[i])
     );
+    `ifdef SCAIEV_ENABLE
+    `ifndef SYNTHESIS
+    always_ff @(posedge clk_i) begin
+      if (rst_ni === 1'b0 && instr_scaiev_overlap[i]) begin
+        $display("ERROR %m Illegal instruction overlap (%d)", i);
+      end
+    end
+    `endif
+    `endif
   end
 
   // ------------------
@@ -259,12 +294,14 @@ module id_stage #(
       issue_n             = issue_q;
       fetch_entry_ready_o = '0;
 
+
       // Clear the valid flag if issue has acknowledged the instruction
       if (issue_instr_ack_i[0]) issue_n[0].valid = 1'b0;
 
       // if we have a space in the register and the fetch is valid, go get it
       // or the issue stage is currently acknowledging an instruction, which means that we will have space
       // for a new instruction
+
       if ((!issue_q[0].valid || issue_instr_ack_i[0]) && fetch_entry_valid_i[0]) begin
         if (stall_instr_fetch) begin
           fetch_entry_ready_o[0] = 1'b0;
@@ -273,7 +310,9 @@ module id_stage #(
         end
         issue_n[0] = '{1'b1, decoded_instruction[0], orig_instr[0], is_control_flow_instr[0]};
       end
-
+    `ifdef SCAIEV_ENABLE
+    scaiev_decode_isStalling = !fetch_entry_ready_o[0];
+    `endif
       // invalidate the pipeline register on a flush
       if (flush_i) issue_n[0].valid = 1'b0;
     end

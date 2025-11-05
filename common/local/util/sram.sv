@@ -24,7 +24,8 @@ module sram #(
     parameter USER_EN    = 0,
     parameter NUM_WORDS  = 1024,
     parameter SIM_INIT   = "none",
-    parameter OUT_REGS   = 0     // enables output registers in FPGA macro (read lat = 2)
+    parameter OUT_REGS   = 0,    // enables output registers in FPGA macro (read lat = 2)
+    parameter LATENCY = 1
 )(
    input  logic                          clk_i,
    input  logic                          rst_ni,
@@ -69,7 +70,7 @@ end
         .DataWidth(64),                 // Data signal width
         .ByteWidth(32'd8),              // Width of a data byte
         .NumPorts(32'd1),               // Number of read and write ports
-        .Latency(32'd1),                // Latency when the read data is available
+        .Latency(LATENCY),                // Latency when the read data is available
         .SimInit(SIM_INIT),             // Simulation initialization
         .PrintSimCfg(1'b0)              // Print configuration
       ) i_tc_sram_wrapper (

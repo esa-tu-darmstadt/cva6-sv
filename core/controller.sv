@@ -12,13 +12,16 @@
 // Date: 08.05.2017
 // Description: Flush controller
 
-
 module controller
   import ariane_pkg::*;
 #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
     parameter type bp_resolve_t = logic
 ) (
+    `ifdef SCAIEV_ENABLE
+    input logic scaiev_issue_flush,
+    input logic scaiev_decode_flush,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -75,6 +78,12 @@ module controller
     input logic flush_commit_i,
     // Flush request from accelerator - ACC_DISPATCHER
     input logic flush_acc_i
+    `ifdef SCAIEV_ENABLE
+    // Flush un-issued instructions of the scoreboard (ignoring SCAIE-V flush) - FRONTEND
+    ,output logic flush_unissued_instr_prescaiev_o
+    // Flush the IF stage - FRONTEND
+    ,output logic flush_if_prescaiev_o
+    `endif
 );
 
   // active fence - high if we are currently flushing the dcache
@@ -231,6 +240,19 @@ module controller
       // added to the system
       flush_bp_o             = 1'b1;
     end
+    `ifdef SCAIEV_ENABLE
+    flush_unissued_instr_prescaiev_o = flush_unissued_instr_o;
+    if (scaiev_issue_flush) begin
+      flush_unissued_instr_o = 1'b1;
+      flush_if_o = 1'b1;
+    end
+    // Include scaiev_issue_flush in flush_if_prescaiev, but not scaiev_decode_flush
+    flush_if_prescaiev_o = flush_if_o;
+    if (scaiev_decode_flush) begin
+      flush_if_o = 1'b1;
+    end
+    //flush_id_o = flush_id_o | scaiev_decode_flush;
+    `endif
   end
 
   // ----------------------

@@ -12,7 +12,9 @@
 // Date: 08.04.2017
 // Description: Scoreboard - keeps track of all decoded, issued and committed instructions
 
-module scoreboard #(
+module scoreboard
+  `ifdef SCAIEV_ENABLE import scaiev_config::*; `endif
+#(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
     parameter type bp_resolve_t = logic,
     parameter type exception_t = logic,
@@ -23,6 +25,13 @@ module scoreboard #(
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
     input logic rst_ni,
+
+    `ifdef SCAIEV_ENABLE
+    input logic scaiev_writeback_spawn_valid,
+    input logic [CVA6Cfg.XLEN-1:0] scaiev_writeback_spawn_data,
+    input logic [4:0] scaiev_writeback_spawn_addr,
+    `endif
+
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     output logic sb_full_o,
     // Flush only un-issued instructions - TO_BE_COMPLETED
@@ -297,7 +306,7 @@ module scoreboard #(
     assign num_commit = commit_ack_i[0];
   end
 
-  assign commit_pointer_n[0] = (flush_i) ? '0 : commit_pointer_q[0] + num_commit;
+  assign commit_pointer_n[0] = (flush_i) ? '0 : (commit_pointer_q[0] + num_commit);
 
   always_comb begin : assign_issue_pointer_n
     issue_pointer_n = issue_pointer[num_issue];
@@ -306,7 +315,7 @@ module scoreboard #(
 
   // precompute offsets for commit slots
   for (genvar k = 1; k < CVA6Cfg.NrCommitPorts; k++) begin : gen_cnt_incr
-    assign commit_pointer_n[k] = (flush_i) ? '0 : commit_pointer_n[0] + unsigned'(k);
+    assign commit_pointer_n[k] = (flush_i) ? '0 : (commit_pointer_n[0] + unsigned'(k));
   end
 
   // -------------------
@@ -385,9 +394,9 @@ module scoreboard #(
   // Read Operands (a.k.a forwarding)
   // ----------------------------------
   // read operand interface: same logic as register file
-  logic [ariane_pkg::SUPERSCALAR:0][CVA6Cfg.NR_SB_ENTRIES+CVA6Cfg.NrWbPorts-1:0]
+  logic [ariane_pkg::SUPERSCALAR:0][CVA6Cfg.NR_SB_ENTRIES+CVA6Cfg.NrWbPorts+(scaiev_config::SpawnRDForward?1:0)-1:0]
       rs1_fwd_req, rs2_fwd_req, rs3_fwd_req;
-  logic [ariane_pkg::SUPERSCALAR:0][CVA6Cfg.NR_SB_ENTRIES+CVA6Cfg.NrWbPorts-1:0][CVA6Cfg.XLEN-1:0] rs_data;
+  logic [ariane_pkg::SUPERSCALAR:0][CVA6Cfg.NR_SB_ENTRIES+CVA6Cfg.NrWbPorts+(scaiev_config::SpawnRDForward?1:0)-1:0][CVA6Cfg.XLEN-1:0] rs_data;
   logic [ariane_pkg::SUPERSCALAR:0] rs1_valid, rs2_valid, rs3_valid;
 
   // WB ports have higher prio than entries
@@ -404,17 +413,23 @@ module scoreboard #(
       )));
       assign rs_data[i][k] = wbdata_i[k];
     end
+    `ifdef SCAIEV_ENABLE
+    assign rs1_fwd_req[i][CVA6Cfg.NrWbPorts] = (scaiev_config::SpawnRDForward) && scaiev_writeback_spawn_valid && (rs1_i[i] == scaiev_writeback_spawn_addr) && !(CVA6Cfg.FpPresent && ariane_pkg::is_rs1_fpr(issue_instr_o[i].op));
+    assign rs2_fwd_req[i][CVA6Cfg.NrWbPorts] = (scaiev_config::SpawnRDForward) && scaiev_writeback_spawn_valid && (rs2_i[i] == scaiev_writeback_spawn_addr) && !(CVA6Cfg.FpPresent && ariane_pkg::is_rs2_fpr(issue_instr_o[i].op));
+    assign rs3_fwd_req[i][CVA6Cfg.NrWbPorts] = (scaiev_config::SpawnRDForward) && scaiev_writeback_spawn_valid && (rs3_i[i] == scaiev_writeback_spawn_addr) && !(CVA6Cfg.FpPresent && ariane_pkg::is_imm_fpr(issue_instr_o[i].op));
+    assign rs_data[i][CVA6Cfg.NrWbPorts] = scaiev_config::SpawnRDForward ? scaiev_writeback_spawn_data : 'x;
+    `endif
     for (genvar k = 0; unsigned'(k) < CVA6Cfg.NR_SB_ENTRIES; k++) begin : gen_rs_entries
-      assign rs1_fwd_req[i][k+CVA6Cfg.NrWbPorts] = (mem_q[k].sbe.rd == rs1_i[i]) & still_issued[k] & mem_q[k].sbe.valid & (mem_q[k].is_rd_fpr_flag == (CVA6Cfg.FpPresent && ariane_pkg::is_rs1_fpr(
+      assign rs1_fwd_req[i][k+(scaiev_config::SpawnRDForward?1:0)+CVA6Cfg.NrWbPorts] = (mem_q[k].sbe.rd == rs1_i[i]) & still_issued[k] & mem_q[k].sbe.valid & (mem_q[k].is_rd_fpr_flag == (CVA6Cfg.FpPresent && ariane_pkg::is_rs1_fpr(
           issue_instr_o[i].op
       )));
-      assign rs2_fwd_req[i][k+CVA6Cfg.NrWbPorts] = (mem_q[k].sbe.rd == rs2_i[i]) & still_issued[k] & mem_q[k].sbe.valid & (mem_q[k].is_rd_fpr_flag == (CVA6Cfg.FpPresent && ariane_pkg::is_rs2_fpr(
+      assign rs2_fwd_req[i][k+(scaiev_config::SpawnRDForward?1:0)+CVA6Cfg.NrWbPorts] = (mem_q[k].sbe.rd == rs2_i[i]) & still_issued[k] & mem_q[k].sbe.valid & (mem_q[k].is_rd_fpr_flag == (CVA6Cfg.FpPresent && ariane_pkg::is_rs2_fpr(
           issue_instr_o[i].op
       )));
-      assign rs3_fwd_req[i][k+CVA6Cfg.NrWbPorts] = (mem_q[k].sbe.rd == rs3_i[i]) & still_issued[k] & mem_q[k].sbe.valid & (mem_q[k].is_rd_fpr_flag == (CVA6Cfg.FpPresent && ariane_pkg::is_imm_fpr(
+      assign rs3_fwd_req[i][k+(scaiev_config::SpawnRDForward?1:0)+CVA6Cfg.NrWbPorts] = (mem_q[k].sbe.rd == rs3_i[i]) & still_issued[k] & mem_q[k].sbe.valid & (mem_q[k].is_rd_fpr_flag == (CVA6Cfg.FpPresent && ariane_pkg::is_imm_fpr(
           issue_instr_o[i].op
       )));
-      assign rs_data[i][k+CVA6Cfg.NrWbPorts] = mem_q[k].sbe.result;
+      assign rs_data[i][k+(scaiev_config::SpawnRDForward?1:0)+CVA6Cfg.NrWbPorts] = mem_q[k].sbe.result;
     end
 
     // check whether we are accessing GPR[0]
@@ -431,7 +446,7 @@ module scoreboard #(
     // use fixed prio here
     // this implicitly gives higher prio to WB ports
     rr_arb_tree #(
-        .NumIn(CVA6Cfg.NR_SB_ENTRIES + CVA6Cfg.NrWbPorts),
+        .NumIn(CVA6Cfg.NR_SB_ENTRIES + CVA6Cfg.NrWbPorts + (scaiev_config::SpawnRDForward ? 1 : 0) ),
         .DataWidth(CVA6Cfg.XLEN),
         .ExtPrio(1'b1),
         .AxiVldRdy(1'b1)
@@ -450,7 +465,7 @@ module scoreboard #(
     );
 
     rr_arb_tree #(
-        .NumIn(CVA6Cfg.NR_SB_ENTRIES + CVA6Cfg.NrWbPorts),
+        .NumIn(CVA6Cfg.NR_SB_ENTRIES + CVA6Cfg.NrWbPorts + (scaiev_config::SpawnRDForward ? 1 : 0) ),
         .DataWidth(CVA6Cfg.XLEN),
         .ExtPrio(1'b1),
         .AxiVldRdy(1'b1)
@@ -471,7 +486,7 @@ module scoreboard #(
     logic [ariane_pkg::SUPERSCALAR:0][CVA6Cfg.XLEN-1:0] rs3;
 
     rr_arb_tree #(
-        .NumIn(CVA6Cfg.NR_SB_ENTRIES + CVA6Cfg.NrWbPorts),
+        .NumIn(CVA6Cfg.NR_SB_ENTRIES + CVA6Cfg.NrWbPorts + (scaiev_config::SpawnRDForward ? 1 : 0) ),
         .DataWidth(CVA6Cfg.XLEN),
         .ExtPrio(1'b1),
         .AxiVldRdy(1'b1)

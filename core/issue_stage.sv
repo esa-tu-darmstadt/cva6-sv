@@ -24,6 +24,25 @@ module issue_stage
     parameter type fu_data_t = logic,
     parameter type scoreboard_entry_t = logic
 ) (
+`ifdef SCAIEV_ENABLE
+    output fu_data_t [SUPERSCALAR:0]         sv_fu_data_o,
+    output logic [SUPERSCALAR:0]             sv_issue_valid_o,
+    input  logic                             sv_issue_ready_i,
+    output logic [31:0]                      sv_off_instr_o,
+    output logic                             scaiev_issue_isStalling,
+    output logic                             scaiev_issue_isValid,
+    output logic                             scaiev_issue_pipeinto_scaievfu,
+    output logic [CVA6Cfg.VLEN-1:0]          scaiev_issue_PC,
+    input  logic                             scaiev_issue_stall,
+    input  logic                             scaiev_issue_mem_stall,
+    output logic [31:0]                      scaiev_issue_rdInstr,
+    output logic [CVA6Cfg.XLEN-1:0]          scaiev_issue_rdRS1,
+    output logic [CVA6Cfg.XLEN-1:0]          scaiev_issue_rdRS2,
+    output logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_issue_trans_id_o,
+    input logic scaiev_writeback_spawn_valid,
+    input logic [CVA6Cfg.XLEN-1:0] scaiev_writeback_spawn_data,
+    input logic [4:0] scaiev_writeback_spawn_addr,
+`endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -236,6 +255,12 @@ module issue_stage
       .cvxif_valid_o      (x_issue_valid_o),
       .cvxif_ready_i      (x_issue_ready_i),
       .cvxif_off_instr_o  (x_off_instr_o),
+      `ifdef SCAIEV_ENABLE
+      .sv_fu_data_o       (sv_fu_data_o),
+      .sv_valid_o         (sv_issue_valid_o),
+      .sv_ready_i         (sv_issue_ready_i),
+      .sv_off_instr_o     (sv_off_instr_o),
+      `endif
       .mult_valid_o       (mult_valid_o),
       .rs1_forwarding_o   (rs1_forwarding_xlen),
       .rs2_forwarding_o   (rs2_forwarding_xlen),
