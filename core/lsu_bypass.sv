@@ -49,6 +49,9 @@ module lsu_bypass
     output lsu_ctrl_t lsu_ctrl_o,
     // TO_BE_COMPLETED - TO_BE_COMPLETED
     output logic      ready_o
+    `ifdef SCAIEV_MEM
+    ,output logic scaiev_execute_mem_ready
+    `endif
 );
 
   lsu_ctrl_t [1:0] mem_n, mem_q;
@@ -59,6 +62,9 @@ module lsu_bypass
   logic empty;
   assign empty   = (status_cnt_q == 0);
   assign ready_o = empty;
+  `ifdef SCAIEV_MEM
+  assign scaiev_execute_mem_ready = (status_cnt_q == 0) || (status_cnt_q == 1);
+  `endif
 
   always_comb begin
     automatic logic [1:0] status_cnt;

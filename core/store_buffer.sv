@@ -34,6 +34,7 @@ module store_buffer
 
     input logic commit_i,  // commit the instruction which was placed there most recently
     output logic commit_ready_o,  // commit queue is ready to accept another commit request
+    output logic commit_speculative_empty_o, // Speculative store queue is empty (SCAIE-V) - EX_STAGE
     output logic ready_o,  // the store queue is ready to accept a new request
                            // it is only ready if it can unconditionally commit the instruction, e.g.:
                            // the commit buffer needs to be empty
@@ -45,6 +46,9 @@ module store_buffer
     input logic [CVA6Cfg.XLEN-1:0] data_i,  // data which is placed in the queue
     input logic [(CVA6Cfg.XLEN/8)-1:0] be_i,  // byte enable in
     input logic [1:0] data_size_i,  // type of request we are making (e.g.: bytes to write)
+    `ifdef SCAIEV_MEM
+    input logic unordered_i, // don't wait for commit
+    `endif
 
     // D$ interface
     input  dcache_req_o_t req_port_i,
@@ -59,6 +63,9 @@ module store_buffer
     logic [CVA6Cfg.XLEN-1:0] data;
     logic [(CVA6Cfg.XLEN/8)-1:0] be;
     logic [1:0] data_size;
+    `ifdef SCAIEV_MEM
+    logic unordered; // this entry is unordered, does not wait for commit
+    `endif
     logic valid;  // this entry is valid, we need this for checking if the address offset matches
   }
       speculative_queue_n[DEPTH_SPEC-1:0],
@@ -77,12 +84,20 @@ module store_buffer
   logic [$clog2(DEPTH_COMMIT)-1:0] commit_write_pointer_n, commit_write_pointer_q;
 
   assign store_buffer_empty_o = (speculative_status_cnt_q == 0) & no_st_pending_o;
+  assign commit_speculative_empty_o = (speculative_status_cnt_q == 0);
   // ----------------------------------------
   // Speculative Queue - Core Interface
   // ----------------------------------------
   always_comb begin : core_if
     automatic logic [$clog2(DEPTH_SPEC):0] speculative_status_cnt;
+    automatic logic unordered_commit;
+
     speculative_status_cnt      = speculative_status_cnt_q;
+    `ifdef SCAIEV_MEM
+    unordered_commit = speculative_queue_q[speculative_read_pointer_q].valid && speculative_queue_q[speculative_read_pointer_q].unordered;
+    `else
+    unordered_commit = 1'b0;
+    `endif
 
     // default assignments
     speculative_read_pointer_n  = speculative_read_pointer_q;
@@ -96,6 +111,11 @@ module store_buffer
       speculative_queue_n[speculative_write_pointer_q].be = be_i;
       speculative_queue_n[speculative_write_pointer_q].data_size = data_size_i;
       speculative_queue_n[speculative_write_pointer_q].valid = 1'b1;
+      `ifdef SCAIEV_MEM
+      speculative_queue_n[speculative_write_pointer_q].unordered = unordered_i;
+      if (speculative_read_pointer_q == speculative_write_pointer_q && unordered_i)
+        unordered_commit = 1'b1;
+      `endif
       // advance the write pointer
       speculative_write_pointer_n = speculative_write_pointer_q + 1'b1;
       speculative_status_cnt++;
@@ -103,7 +123,7 @@ module store_buffer
 
     // evict the current entry out of this queue, the commit queue will thankfully take it and commit it
     // to the memory hierarchy
-    if (commit_i) begin
+    if (commit_i || unordered_commit) begin
       // invalidate
       speculative_queue_n[speculative_read_pointer_q].valid = 1'b0;
       // advance the read pointer

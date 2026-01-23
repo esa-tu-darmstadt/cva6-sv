@@ -13,8 +13,13 @@
 // Description: Instruction decode, contains the logic for decode,
 //              issue and read operands.
 
+
 module id_stage #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
+    `ifdef SCAIEV_ENABLE
+    parameter type scaiev_instr_decoded_t = logic,
+    parameter type scaiev_id_pipeinto_t = logic,
+    `endif
     parameter type branchpredict_sbe_t = logic,
     parameter type dcache_req_i_t = logic,
     parameter type dcache_req_o_t = logic,
@@ -28,6 +33,23 @@ module id_stage #(
     parameter type x_compressed_req_t = logic,
     parameter type x_compressed_resp_t = logic
 ) (
+    `ifdef SCAIEV_ENABLE
+    output logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isStalling,
+    output logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isValid,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_stall,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][31:0] scaiev_decode_rdInstr,
+    output scaiev_instr_decoded_t [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_decInstr,
+    output scaiev_id_pipeinto_t scaiev_id_pipeinto,
+
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isSCAIEV,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isSCAIEV_hasRS1,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isSCAIEV_hasRS2,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isSCAIEV_hasRD,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isSCAIEV_hasRD_decoupled,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isBranch,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isLoad,
+    input logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_decode_isStore,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -103,7 +125,8 @@ module id_stage #(
     logic [31:0]       orig_instr;
     logic              is_ctrl_flow;
   } issue_struct_t;
-  issue_struct_t [CVA6Cfg.NrIssuePorts-1:0] issue_n, issue_q;
+  issue_struct_t [CVA6Cfg.NrIssuePorts-1:0] issue_n, issue_n_sv, issue_q;
+  logic              [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_ready_prescaiev;
   // stall required for ZCMP ZCMT CVXIF
   logic              [CVA6Cfg.NrIssuePorts-1:0]       stall_instr_fetch;
 
@@ -118,6 +141,13 @@ module id_stage #(
   logic              [CVA6Cfg.NrIssuePorts-1:0]       is_compressed_rvc;
   logic              [CVA6Cfg.NrIssuePorts-1:0]       is_zcmt_instr;
   logic              [CVA6Cfg.NrIssuePorts-1:0]       is_macro_instr;
+
+  `ifdef SCAIEV_ENABLE
+  // set if there is an unexpected encoding overlap (non-SCAIEV vs. SCAIEV)
+  logic [CVA6Cfg.NrIssuePorts-1:0] instr_scaiev_overlap;
+  // for each issue port i and decode port k: apply_scaiev_decode_stall[i][k] indicates if issue_n[i] should be masked by scaiev_decode_stall[k]
+  logic [CVA6Cfg.NrIssuePorts-1:0] [CVA6Cfg.NrIssuePorts-1:0] apply_scaiev_decode_stall;
+  `endif
 
   // CVXIF compressed interface driver signals
   // Inputs
@@ -301,8 +331,9 @@ module id_stage #(
   assign rvfi_is_compressed_o = is_compressed_rvc;
 
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
-    decoder #(
+    decoder_cva6 #(
         .CVA6Cfg(CVA6Cfg),
+        `ifdef SCAIEV_ENABLE .scaiev_instr_decoded_t(scaiev_instr_decoded_t), `endif
         .branchpredict_sbe_t(branchpredict_sbe_t),
         .exception_t(exception_t),
         .irq_ctrl_t(irq_ctrl_t),
@@ -336,11 +367,36 @@ module id_stage #(
         .tw_i,
         .vtw_i,
         .tsr_i,
+        `ifdef SCAIEV_ENABLE
+        .instr_scaiev_overlap_o(instr_scaiev_overlap[i]),
+        `endif
         .hu_i,
         .instruction_o             (decoded_instruction[i]),
         .orig_instr_o              (orig_instr[i]),
         .is_control_flow_instr_o   (is_control_flow_instr[i])
+
+        `ifdef SCAIEV_ENABLE
+        ,.scaiev_decode_rdInstr                 (scaiev_decode_rdInstr[i])
+        ,.scaiev_decode_decInstr                (scaiev_decode_decInstr[i])
+        ,.scaiev_decode_isSCAIEV                (scaiev_decode_isSCAIEV[i])
+        ,.scaiev_decode_isSCAIEV_hasRS1         (scaiev_decode_isSCAIEV_hasRS1[i])
+        ,.scaiev_decode_isSCAIEV_hasRS2         (scaiev_decode_isSCAIEV_hasRS2[i])
+        ,.scaiev_decode_isSCAIEV_hasRD          (scaiev_decode_isSCAIEV_hasRD[i])
+        ,.scaiev_decode_isSCAIEV_hasRD_decoupled(scaiev_decode_isSCAIEV_hasRD_decoupled[i])
+        ,.scaiev_decode_isBranch                (scaiev_decode_isBranch[i])
+        ,.scaiev_decode_isLoad                  (scaiev_decode_isLoad[i])
+        ,.scaiev_decode_isStore                 (scaiev_decode_isStore[i])
+        `endif
     );
+    `ifdef SCAIEV_ENABLE
+    `ifndef SYNTHESIS
+    always_ff @(posedge clk_i) begin
+      if (rst_ni === 1'b0 && instr_scaiev_overlap[i]) begin
+        $display("ERROR %m Illegal instruction overlap (%d)", i);
+      end
+    end
+    `endif
+    `endif
   end
 
   // ------------------
@@ -354,10 +410,21 @@ module id_stage #(
     assign orig_instr_o[i] = issue_q[i].orig_instr;
   end
 
+  `ifdef SCAIEV_ENABLE
+  assign scaiev_decode_isValid = fetch_entry_valid_i;
+  `endif
   if (CVA6Cfg.SuperscalarEn) begin
     always_comb begin
       issue_n = issue_q;
-      fetch_entry_ready_o = '0;
+      fetch_entry_ready_prescaiev = '0;
+      `ifdef SCAIEV_ENABLE
+      //(Issue port 1 -> Issue port 0)
+      scaiev_id_pipeinto.issue1_issue0 = 1'b0;
+      scaiev_id_pipeinto.decode0_issue = '0;
+      scaiev_id_pipeinto.decode1_issue1 = 1'b0;
+      scaiev_decode_isStalling = '1;
+      apply_scaiev_decode_stall = '0;
+      `endif
       // instruction is not valid if we stall due to ZCMT or CVXIF
       decoded_instruction_valid[0] = (CVA6Cfg.RVZCMT && is_zcmt_instr[0] && stall_macro_deco_zcmt) ||
                                      (CVA6Cfg.CvxifEn && is_illegal_cvxif_i && ~stall_macro_deco) && stall_instr_fetch[0]
@@ -377,36 +444,58 @@ module id_stage #(
         if (issue_n[1].valid) begin
           issue_n[0] = issue_n[1];
           issue_n[1].valid = 1'b0;
+          `ifdef SCAIEV_ENABLE
+          //Issue port 1 -> Issue port 0
+          scaiev_id_pipeinto.issue1_issue0 = 1'b1;
+          `endif
         end else if (fetch_entry_valid_i[0]) begin
-          fetch_entry_ready_o[0] = ~stall_instr_fetch[0];
+          fetch_entry_ready_prescaiev[0] = ~stall_instr_fetch[0];
           issue_n[0] = '{
               decoded_instruction_valid[0],
               decoded_instruction[0],
               orig_instr[0],
               is_control_flow_instr[0]
           };
+          `ifdef SCAIEV_ENABLE
+          //Decode port 0 -> Issue port 0
+          scaiev_id_pipeinto.decode0_issue[0] = 1'b1;
+          scaiev_decode_isStalling[0] = 1'b0;
+          apply_scaiev_decode_stall[0][0] = 1'b1;
+          `endif
         end
       end
 
       if (!issue_n[1].valid) begin
-        if (fetch_entry_ready_o[0]) begin
+        if (fetch_entry_ready_prescaiev[0]) begin
           if (fetch_entry_valid_i[1]) begin
-            fetch_entry_ready_o[1] = ~stall_instr_fetch[1];
+            fetch_entry_ready_prescaiev[1] = ~stall_instr_fetch[1];
             issue_n[1] = '{
                 decoded_instruction_valid[1],
                 decoded_instruction[1],
                 orig_instr[1],
                 is_control_flow_instr[1]
             };
+            `ifdef SCAIEV_ENABLE
+            //Decode port 1 -> Issue port 1
+            scaiev_id_pipeinto.decode1_issue1 = 1'b1;
+            scaiev_decode_isStalling[1] = 1'b0;
+            apply_scaiev_decode_stall[1][1] = 1'b1;
+            `endif
           end
         end else if (fetch_entry_valid_i[0]) begin
-          fetch_entry_ready_o[0] = ~stall_instr_fetch[0];
+          fetch_entry_ready_prescaiev[0] = ~stall_instr_fetch[0];
           issue_n[1] = '{
               decoded_instruction_valid[0],
               decoded_instruction[0],
               orig_instr[0],
               is_control_flow_instr[0]
           };
+          `ifdef SCAIEV_ENABLE
+          //Decode port 0 -> Issue port 1
+          scaiev_id_pipeinto.decode0_issue[1] = 1'b1;
+          scaiev_decode_isStalling[0] = 1'b0;
+          apply_scaiev_decode_stall[1][0] = 1'b1;
+          `endif
         end
       end
 
@@ -418,7 +507,7 @@ module id_stage #(
   end else begin
     always_comb begin
       issue_n = issue_q;
-      fetch_entry_ready_o = '0;
+      fetch_entry_ready_prescaiev = '0;
       // instruction is not valid if we stall due to ZCMT or CVXIF
       decoded_instruction_valid[0] = (CVA6Cfg.RVZCMT && is_zcmt_instr[0] && stall_macro_deco_zcmt) ||
                                      (CVA6Cfg.CvxifEn && is_illegal_cvxif_i && ~stall_macro_deco && stall_instr_fetch[0])
@@ -431,7 +520,7 @@ module id_stage #(
       // or the issue stage is currently acknowledging an instruction, which means that we will have space
       // for a new instruction
       if (!issue_n[0].valid && fetch_entry_valid_i[0]) begin
-        fetch_entry_ready_o[0] = ~stall_instr_fetch[0];
+        fetch_entry_ready_prescaiev[0] = ~stall_instr_fetch[0];
         issue_n[0] = '{
             decoded_instruction_valid[0],
             decoded_instruction[0],
@@ -439,11 +528,29 @@ module id_stage #(
             is_control_flow_instr[0]
         };
       end
-
+    `ifdef SCAIEV_ENABLE
+    scaiev_decode_isStalling = !fetch_entry_ready_prescaiev[0];
+    `endif
       // invalidate the pipeline register on a flush
       if (flush_i) issue_n[0].valid = 1'b0;
     end
   end
+  `ifdef SCAIEV_ENABLE
+  assign fetch_entry_ready_o = fetch_entry_ready_prescaiev & (~scaiev_decode_stall | ~fetch_entry_valid_i);
+  for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
+    always_comb begin
+      issue_n_sv[i] = issue_n[i];
+      if (apply_scaiev_decode_stall[i] & scaiev_decode_stall)
+        issue_n_sv[i].valid = 1'b0;
+    end
+  end
+  if (CVA6Cfg.SuperscalarEn) begin
+    assign scaiev_id_pipeinto.decode1_decode0 = fetch_entry_valid_i[1] && !fetch_entry_ready_o[1];
+  end
+  `else
+  assign fetch_entry_ready_o = fetch_entry_ready_prescaiev;
+  assign issue_n_sv = issue_n;
+  `endif
   // -------------------------
   // Registers (ID <-> Issue)
   // -------------------------
@@ -451,7 +558,7 @@ module id_stage #(
     if (~rst_ni) begin
       issue_q <= '0;
     end else begin
-      issue_q <= issue_n;
+      issue_q <= issue_n_sv;
     end
   end
 

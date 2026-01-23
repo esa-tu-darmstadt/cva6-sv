@@ -273,17 +273,27 @@ module wt_dcache_wbuffer
   end
 
   // replicate transfers shorter than a dword
-  assign miss_wdata_o = CVA6Cfg.IS_XLEN64 ? repData64(
-      wbuffer_dirty_mux.data, bdirty_off, miss_size_o[1:0]
-  ) : repData32(
-      wbuffer_dirty_mux.data, bdirty_off, miss_size_o[1:0]
-  );
-  if (CVA6Cfg.DATA_USER_EN) begin
-    assign miss_wuser_o = CVA6Cfg.IS_XLEN64 ? repData64(
-        wbuffer_dirty_mux.user, bdirty_off, miss_size_o[1:0]
-    ) : repData32(
-        wbuffer_dirty_mux.user, bdirty_off, miss_size_o[1:0]
+  if (CVA6Cfg.IS_XLEN64) begin
+    assign miss_wdata_o = repData64(
+        wbuffer_dirty_mux.data, bdirty_off, miss_size_o[1:0]
     );
+  end
+  else begin
+    assign miss_wdata_o = repData32(
+        wbuffer_dirty_mux.data, bdirty_off, miss_size_o[1:0]
+    );
+  end
+  if (CVA6Cfg.DATA_USER_EN) begin
+    if (CVA6Cfg.IS_XLEN64) begin
+      assign miss_wuser_o = repData64(
+          wbuffer_dirty_mux.user, bdirty_off, miss_size_o[1:0]
+      );
+    end
+    else begin
+      assign miss_wuser_o = repData32(
+          wbuffer_dirty_mux.user, bdirty_off, miss_size_o[1:0]
+      );
+    end
   end else begin
     assign miss_wuser_o = '0;
   end

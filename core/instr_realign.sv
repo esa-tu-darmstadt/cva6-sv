@@ -44,6 +44,11 @@ module instr_realign
     output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][CVA6Cfg.VLEN-1:0] addr_o,
     // Instruction - instr_scan&instr_queue
     output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][31:0] instr_o
+    `ifdef SCAIEV_ZOL
+    // Fetch valid but realign stage doesn't have an instruction yet due to misalignment
+    //  (i.e., fetch contained only 2 of 4 bytes of next instruction)
+    , output logic scaiev_realign_fully_unaligned
+    `endif
 );
   // as a maximum we support a fetch width of 64-bit, hence there can be 4 compressed instructions
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] instr_is_compressed;
@@ -362,4 +367,7 @@ module instr_realign
       end
     end
   end
+  `ifdef SCAIEV_ZOL
+  assign scaiev_realign_fully_unaligned = valid_i && !flush_i && unaligned_d && !(|valid_o);
+  `endif
 endmodule

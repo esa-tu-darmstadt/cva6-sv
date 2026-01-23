@@ -48,8 +48,31 @@ module issue_read_operands
     output logic [CVA6Cfg.NrIssuePorts-1:0] issue_ack_o,
     // Forwarding - SCOREBOARD
     input forwarding_t fwd_i,
+    //SCAIE-V
+    `ifdef SCAIEV_ENABLE
+    // Decoupled writeback forwarding
+    input  logic scaiev_writeback_spawn_valid,
+    input  logic [CVA6Cfg.XLEN-1:0] scaiev_writeback_spawn_data,
+    input  logic [4:0] scaiev_writeback_spawn_addr,
+
+    output logic [scaiev_config::NrFUIssuePorts-1:0] sv_valid_o,
+    input  logic [scaiev_config::NrFUIssuePorts-1:0] sv_ready_i,
+    output logic [scaiev_config::NrFUIssuePorts-1:0][31:0] sv_off_instr_o,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][scaiev_config::NrFUIssuePorts-1:0] scaiev_issue_pipeinto_scaievfu,
+    output logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_isStalling,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_issue_PC,
+    input  logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_stall,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][31:0] scaiev_issue_rdInstr,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS1,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS2,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_issue_trans_id_o,
+    input  logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_mem_stall,
+    `endif
     // FU data useful to execute instruction - EX_STAGE
     output fu_data_t [CVA6Cfg.NrIssuePorts-1:0] fu_data_o,
+    `ifdef SCAIEV_ENABLE
+    output fu_data_t [scaiev_config::NrFUIssuePorts-1:0] sv_fu_data_o,
+    `endif
     // Unregistered version of fu_data_o.operanda - EX_STAGE
     output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.VLEN-1:0] rs1_forwarding_o,
     // Unregistered version of fu_data_o.operandb - EX_STAGE
@@ -136,13 +159,14 @@ module issue_read_operands
   localparam OPERANDS_PER_INSTR = CVA6Cfg.NrRgprPorts / CVA6Cfg.NrIssuePorts;
 
   typedef struct packed {
-    logic none, load, store, alu, alu2, ctrl_flow, mult, csr, fpu, fpu_vec, cvxif, accel, aes;
+    logic none, load, store, alu, alu2, ctrl_flow, mult, csr, fpu, fpu_vec, cvxif, accel, aes`ifdef SCAIEV_ENABLE , sv`endif;
   } fus_busy_t;
 
   logic [CVA6Cfg.NrIssuePorts-1:0] stall_raw, stall_rs1, stall_rs2, stall_rs3;
   logic [CVA6Cfg.NrIssuePorts-1:0] fu_busy;  // functional unit is busy
   fus_busy_t [CVA6Cfg.NrIssuePorts-1:0] fus_busy;  // which functional units are considered busy
   logic [CVA6Cfg.NrIssuePorts-1:0] issue_ack;
+  logic [CVA6Cfg.NrIssuePorts-1:0] issue_ack_prescaiev; // Issue stage acknowledge, excluding scaiev stall
   // operands coming from regfile
   logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] operand_a_regfile, operand_b_regfile;
   // third operand from fp regfile or gp regfile if NR_RGPR_PORTS == 3
@@ -150,6 +174,9 @@ module issue_read_operands
   rs3_len_t operand_c_fpr;
   // output flipflop (ID <-> EX)
   fu_data_t [CVA6Cfg.NrIssuePorts-1:0] fu_data_n, fu_data_q;
+  `ifdef SCAIEV_ENABLE
+  fu_data_t [CVA6Cfg.NrIssuePorts-1:0] sv_fu_data_q;
+  `endif
   logic               [CVA6Cfg.VLEN-1:0] pc_n;
   logic                                  is_compressed_instr_n;
   branchpredict_sbe_t                    branch_predict_n;
@@ -216,6 +243,23 @@ module issue_read_operands
   riscv::instruction_t orig_instr;
   assign orig_instr = riscv::instruction_t'(orig_instr_i[0]);
 
+  `ifdef SCAIEV_ENABLE
+  logic [CVA6Cfg.NrIssuePorts-1:0] sv_valid_q;
+  logic [CVA6Cfg.NrIssuePorts-1:0][31:0] sv_off_instr_q;
+  for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
+    assign scaiev_issue_isStalling[i] = !issue_ack_prescaiev[i];
+    assign scaiev_issue_PC[i] = issue_instr_i[i].pc;
+    assign scaiev_issue_rdRS1[i] = rs1_forwarding_o[i];
+    assign scaiev_issue_rdRS2[i] = rs2_forwarding_o[i];
+    assign scaiev_issue_rdInstr[i] = orig_instr_i[i];
+    assign scaiev_issue_trans_id_o[i] = issue_instr_i[i].trans_id;
+  end
+  for (genvar i = 0; i < scaiev_config::NrFUIssuePorts; i++) begin
+    assign sv_valid_o[i]     = sv_valid_q[i];
+    assign sv_off_instr_o[i] = sv_off_instr_q[i];
+  end
+  `endif
+
   // CVXIF Signals
   logic cvxif_req_allowed;
   logic x_transaction_rejected, x_transaction_rejected_n;
@@ -275,6 +319,9 @@ module issue_read_operands
   end
 
   assign fu_data_o = fu_data_q;
+  `ifdef SCAIEV_ENABLE
+  assign sv_fu_data_o = sv_fu_data_q;
+  `endif
   assign alu_valid_o = alu_valid_q;
   assign aes_valid_o = aes_valid_q;
   assign branch_valid_o = branch_valid_q;
@@ -321,10 +368,14 @@ module issue_read_operands
       if (CVA6Cfg.SuperscalarEn) fus_busy[0].alu2 = 1'b1;
     end
 
-    if (!lsu_ready_i) begin
+    if (!lsu_ready_i `ifdef SCAIEV_ENABLE || scaiev_issue_mem_stall[0] `endif ) begin
       fus_busy[0].load  = 1'b1;
       fus_busy[0].store = 1'b1;
     end
+
+    `ifdef SCAIEV_ENABLE
+    fus_busy[0].sv = !sv_ready_i[0];
+    `endif
 
     if (CVA6Cfg.SuperscalarEn) begin
       fus_busy[1] = fus_busy[0];
@@ -333,6 +384,14 @@ module issue_read_operands
       fus_busy[1].csr = 1'b1;
       // Never issue CVXIF instruction on second issue port.
       fus_busy[1].cvxif = 1'b1;
+
+      `ifdef SCAIEV_ENABLE
+      if (scaiev_config::NrFUIssuePorts >= 2) fus_busy[1].sv = !sv_ready_i[1];
+      if (scaiev_issue_mem_stall[1]) begin
+        fus_busy[1].load  = 1'b1;
+        fus_busy[1].store = 1'b1;
+      end
+      `endif
 
       unique case (issue_instr_i[0].fu)
         NONE: fus_busy[1].none = 1'b1;
@@ -383,8 +442,15 @@ module issue_read_operands
         LOAD, STORE: begin
           fus_busy[1].load  = 1'b1;
           fus_busy[1].store = 1'b1;
+          `ifdef SCAIEV_ENABLE
+          if (scaiev_config::NrFUIssuePorts < 2 && issue_instr_i[0].is_scaiev)
+            fus_busy[1].sv = 1'b1;
+          `endif
         end
         CVXIF: ;
+        `ifdef SCAIEV_ENABLE
+        SCAIEV: if (scaiev_config::NrFUIssuePorts < 2) fus_busy[1].sv = 1'b1;
+        `endif
         default: ;
       endcase
     end
@@ -410,6 +476,9 @@ module issue_read_operands
         STORE: fu_busy[i] = fus_busy[i].store;
         CVXIF: fu_busy[i] = fus_busy[i].cvxif;
         AES: fu_busy[i] = fus_busy[i].aes;
+        `ifdef SCAIEV_ENABLE
+        SCAIEV: fu_busy[i] = fus_busy[i].sv;
+        `endif
         default:
         if (CVA6Cfg.FpPresent) begin
           unique case (issue_instr_i[i].fu)
@@ -421,6 +490,10 @@ module issue_read_operands
           fu_busy[i] = 1'b0;
         end
       endcase
+      `ifdef SCAIEV_ENABLE
+      if (issue_instr_i[i].is_scaiev)
+        fu_busy[i] = fu_busy[i] | fus_busy[i].sv;
+      `endif
     end
   end
 
@@ -507,16 +580,43 @@ module issue_read_operands
   end
 
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
-    assign rs1_res[i] = fwd_res[idx_hzd_rs1[i]];
-    assign rs1_is_not_csr[i] = rs1_fpr[i] || (fwd_i.sbe[idx_hzd_rs1[i]].fu != ariane_pkg::CSR) || (CVA6Cfg.RVS && issue_instr_i[i].op == ariane_pkg::SFENCE_VMA);
-    assign rs1_valid[i] = fwd_res_valid[idx_hzd_rs1[i]] && rs1_is_not_csr[i];
+    always_comb begin : fwd_results
+      rs1_res[i] = fwd_res[idx_hzd_rs1[i]];
+      rs1_is_not_csr[i] = rs1_fpr[i] || (fwd_i.sbe[idx_hzd_rs1[i]].fu != ariane_pkg::CSR) || (CVA6Cfg.RVS && issue_instr_i[i].op == ariane_pkg::SFENCE_VMA);
+      rs1_valid[i] = fwd_res_valid[idx_hzd_rs1[i]] && rs1_is_not_csr[i];
+      `ifdef SCAIEV_ENABLE
+      //SCAIE-V decoupled writeback forwarding (rs1)
+      if ((scaiev_config::SpawnRDForward) && scaiev_writeback_spawn_valid && (issue_instr_i[i].rs1 == scaiev_writeback_spawn_addr) && !rs1_fpr[i]) begin
+        rs1_res[i] = scaiev_writeback_spawn_data;
+        rs1_is_not_csr[i] = 1'b1;
+        rs1_valid[i] = 1'b1;
+      end
+      `endif
 
-    assign rs2_res[i] = fwd_res[idx_hzd_rs2[i]];
-    assign rs2_is_not_csr[i] = rs2_fpr[i] || (fwd_i.sbe[idx_hzd_rs2[i]].fu != ariane_pkg::CSR) || (CVA6Cfg.RVS && issue_instr_i[i].op == ariane_pkg::SFENCE_VMA);
-    assign rs2_valid[i] = fwd_res_valid[idx_hzd_rs2[i]] && rs2_is_not_csr[i];
+      rs2_res[i] = fwd_res[idx_hzd_rs2[i]];
+      rs2_is_not_csr[i] = rs2_fpr[i] || (fwd_i.sbe[idx_hzd_rs2[i]].fu != ariane_pkg::CSR) || (CVA6Cfg.RVS && issue_instr_i[i].op == ariane_pkg::SFENCE_VMA);
+      rs2_valid[i] = fwd_res_valid[idx_hzd_rs2[i]] && rs2_is_not_csr[i];
+      `ifdef SCAIEV_ENABLE
+      //SCAIE-V decoupled writeback forwarding (rs2)
+      if ((scaiev_config::SpawnRDForward) && scaiev_writeback_spawn_valid && (issue_instr_i[i].rs2 == scaiev_writeback_spawn_addr) && !rs2_fpr[i]) begin
+        rs2_res[i] = scaiev_writeback_spawn_data;
+        rs2_is_not_csr[i] = 1'b1;
+        rs2_valid[i] = 1'b1;
+      end
+      `endif
 
-    assign rs3[i] = fwd_res[idx_hzd_rs3[i]];
-    assign rs3_valid[i] = fwd_res_valid[idx_hzd_rs3[i]];
+      rs3[i] = fwd_res[idx_hzd_rs3[i]];
+      rs3_valid[i] = fwd_res_valid[idx_hzd_rs3[i]];
+      `ifdef SCAIEV_ENABLE
+      //SCAIE-V decoupled writeback forwarding (rs3)
+      if ((CVA6Cfg.NrRgprPorts == 3) && (scaiev_config::SpawnRDForward)
+          && scaiev_writeback_spawn_valid && (issue_instr_i[i].result[ariane_pkg::REG_ADDR_SIZE-1:0] == scaiev_writeback_spawn_addr)
+          && !rs3_fpr[i]) begin
+        rs3[i] = scaiev_writeback_spawn_data;
+        rs3_valid[i] = 1'b1;
+      end
+      `endif
+    end
 
     if (CVA6Cfg.NrRgprPorts == 3) begin
       assign rs3_res[i] = rs3[i][CVA6Cfg.XLEN-1:0];
@@ -676,7 +776,7 @@ module issue_read_operands
       // also make sure operand B is not already used as an FP operand
       if (issue_instr_i[i].use_imm && (issue_instr_i[i].fu != STORE) && (issue_instr_i[i].fu != CTRL_FLOW) && (issue_instr_i[i].fu != ACCEL) && !(CVA6Cfg.FpPresent && is_rs2_fpr(
               issue_instr_i[i].op
-          ))) begin
+          )) `ifdef SCAIEV_ENABLE && !issue_instr_i[i].is_scaiev `endif ) begin
         fu_data_n[i].operand_b = issue_instr_i[i].result;
       end
     end
@@ -710,7 +810,7 @@ module issue_read_operands
             mult_valid_n[i] = 1'b1;
           end
           LOAD, STORE: begin
-            lsu_valid_n[i] = 1'b1;
+            lsu_valid_n[i] = `ifdef SCAIEV_ENABLE !issue_instr_i[i].is_scaiev `else 1'b1 `endif;
           end
           CSR: begin
             csr_valid_n[i] = 1'b1;
@@ -810,14 +910,17 @@ module issue_read_operands
   always_comb begin : issue_scoreboard
     for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
       // default assignment
+      issue_ack_prescaiev[i] = 1'b0;
       issue_ack[i] = 1'b0;
       // check that the instruction we got is valid
       // and that the functional unit we need is not busy
       if (issue_instr_valid_i[i] && !fu_busy[i]) begin
         if (!stall_raw[i]) begin
-          issue_ack[i] = 1'b1;
+          issue_ack_prescaiev[i] = 1'b1;
+          issue_ack[i] = `ifdef SCAIEV_ENABLE !scaiev_issue_stall[i] `else 1'b1 `endif ;
         end
         if (issue_instr_i[i].ex.valid) begin
+          issue_ack_prescaiev[i] = 1'b1;
           issue_ack[i] = 1'b1;
         end
       end
@@ -826,14 +929,49 @@ module issue_read_operands
     issue_ack_o = issue_ack;
     // Do not acknowledge the issued instruction if transaction is not completed.
     if (issue_instr_i[0].fu == CVXIF && !(x_transaction_accepted_o || x_transaction_rejected)) begin
+      issue_ack_prescaiev[0] = issue_instr_i[0].ex.valid && issue_instr_valid_i[0];
       issue_ack_o[0] = issue_instr_i[0].ex.valid && issue_instr_valid_i[0];
     end
     if (CVA6Cfg.SuperscalarEn) begin
       if (!issue_ack_o[0]) begin
         issue_ack_o[1] = 1'b0;
+        issue_ack_prescaiev[1] = 1'b0;
       end
     end
   end
+  `ifdef SCAIEV_ENABLE
+  always_comb begin
+    scaiev_issue_pipeinto_scaievfu = '0;
+    for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
+      int unsigned fuPortBit = 1 << ((scaiev_config::NrFUIssuePorts > i) ? i : (scaiev_config::NrFUIssuePorts - 1));
+      if (issue_instr_valid_i[i] && issue_ack_prescaiev[i] && issue_instr_i[i].is_scaiev) begin
+        scaiev_issue_pipeinto_scaievfu[i] = fuPortBit;
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      sv_valid_q  <= '0;
+      sv_off_instr_q  <= '0;
+    end else begin
+      sv_valid_q  <= '0;
+      for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
+        //NrIssuePorts==scaiev_config::NrFUIssuePorts: Direct mapping to FU port
+        //NrIssuePorts==2, scaiev_config::NrFUIssuePorts==1: Map both issue ports to single FU port
+        int unsigned fuPort = (scaiev_config::NrFUIssuePorts > i) ? i : (scaiev_config::NrFUIssuePorts - 1);
+        if (!issue_instr_i[i].ex.valid && issue_instr_valid_i[i] && issue_ack_o[i] && issue_instr_i[i].is_scaiev) begin
+          sv_valid_q[fuPort] <= 1'b1;
+          sv_off_instr_q[fuPort] <= orig_instr_i[i];
+          sv_fu_data_q[fuPort] <= fu_data_n[i];
+        end
+      end
+      if (flush_i) begin
+        sv_valid_q  <= '0;
+      end
+    end
+  end
+  `endif
 
   // ----------------------
   // Integer Register File

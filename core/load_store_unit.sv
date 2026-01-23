@@ -52,6 +52,9 @@ module load_store_unit
 
     // Load transaction ID - ISSUE_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] load_trans_id_o,
+    `ifdef SCAIEV_MEM
+    output logic load_has_trans_id_o,
+    `endif
     // Load result - ISSUE_STAGE
     output logic [CVA6Cfg.XLEN-1:0] load_result_o,
     // Load result is valid - ISSUE_STAGE
@@ -61,6 +64,10 @@ module load_store_unit
 
     // Store transaction ID - ISSUE_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] store_trans_id_o,
+    `ifdef SCAIEV_MEM
+    output logic store_has_trans_id_o,
+    output logic store_suppress_wb_o,
+    `endif
     // Store result - ISSUE_STAGE
     output logic [CVA6Cfg.XLEN-1:0] store_result_o,
     // Store result is valid - ISSUE_STAGE
@@ -72,6 +79,8 @@ module load_store_unit
     input logic commit_i,
     // Commit queue is ready to accept another commit request - TO_BE_COMPLETED
     output logic commit_ready_o,
+    // Speculative store queue is empty (SCAIE-V) - EX_STAGE
+    output logic commit_speculative_empty_o,
     // Commit transaction ID - TO_BE_COMPLETED
     input logic [CVA6Cfg.TRANS_ID_BITS-1:0] commit_tran_id_i,
 
@@ -139,7 +148,23 @@ module load_store_unit
     output logic                                      itlb_miss_o,
     // Data TLB miss - PERF_COUNTERS
     output logic                                      dtlb_miss_o,
+  `ifdef SCAIEV_MEM
+    output logic [CVA6Cfg.XLEN-1:0] scaiev_execute_rdMem_result,
+    output logic scaiev_execute_rdMem_result_valid,
+    output logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_execute_rdMem_result_trans_id,
+    output logic scaiev_execute_rdMem_result_has_trans_id,
 
+    output logic scaiev_execute_mem_ready,
+    input logic scaiev_execute_rdMem_valid,
+    input logic [CVA6Cfg.XLEN-1:0] scaiev_execute_memAddr,
+    input logic [2:0] scaiev_execute_memSize,
+    input logic scaiev_execute_memAddr_valid,
+    input logic scaiev_execute_wrMem_valid,
+    input logic [CVA6Cfg.XLEN-1:0] scaiev_execute_wrMem,
+    input logic scaiev_execute_wrMem_suppress_wb,
+    input logic scaiev_execute_mem_has_trans_id,
+    input logic [CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_execute_mem_trans_id,
+  `endif
     // Data cache request output - CACHES
     input  dcache_req_o_t [2:0] dcache_req_ports_i,
     // Data cache request input - CACHES
@@ -186,7 +211,13 @@ module load_store_unit
   logic                        g_overflow;
   logic [(CVA6Cfg.XLEN/8)-1:0] be_i;
 
+  `ifdef SCAIEV_MEM
+  assign scaiev_execute_rdMem_result_trans_id = load_trans_id_o;
+  assign scaiev_execute_rdMem_result_has_trans_id = load_has_trans_id_o;
+  assign vaddr_xlen = scaiev_execute_memAddr_valid ? scaiev_execute_memAddr : $unsigned($signed(fu_data_i.imm) + $signed(fu_data_i.operand_a));
+  `else
   assign vaddr_xlen = $unsigned($signed(fu_data_i.imm) + $signed(fu_data_i.operand_a));
+  `endif
   assign vaddr_i = vaddr_xlen[CVA6Cfg.VLEN-1:0];
   // we work with SV39 or SV32, so if VM is enabled, check that all bits [XLEN-1:38] or [XLEN-1:31] are equal
   assign overflow = (CVA6Cfg.IS_XLEN64 && (!((&vaddr_xlen[CVA6Cfg.XLEN-1:CVA6Cfg.SV-1]) == 1'b1 || (|vaddr_xlen[CVA6Cfg.XLEN-1:CVA6Cfg.SV-1]) == 1'b0)));
@@ -223,9 +254,16 @@ module load_store_unit
   logic [CVA6Cfg.PPNW-1:0] dtlb_ppn, cva6_dtlb_ppn, acc_dtlb_ppn;
 
   logic                             ld_valid;
+  `ifdef SCAIEV_MEM
+  logic                             ld_has_trans_id;
+  `endif
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] ld_trans_id;
   logic [         CVA6Cfg.XLEN-1:0] ld_result;
   logic                             st_valid;
+  `ifdef SCAIEV_MEM
+  logic                             st_has_trans_id;
+  logic                             st_suppress_wb;
+  `endif
   logic [CVA6Cfg.TRANS_ID_BITS-1:0] st_trans_id;
   logic [         CVA6Cfg.XLEN-1:0] st_result;
 
@@ -243,6 +281,9 @@ module load_store_unit
   logic [CVA6Cfg.ASID_WIDTH-1:0] asid[2:0], asid_to_be_flushed[1:0];
   logic [CVA6Cfg.VLEN-1:0] vaddr_to_be_flushed[1:0];
 
+  `ifdef SCAIEV_MEM
+  logic sv_load_result_valid;
+  `endif
   // -------------------
   // MMU e.g.: TLBs/PTW
   // -------------------
@@ -311,7 +352,6 @@ module load_store_unit
 
         .itlb_miss_o(itlb_miss_o),
         .dtlb_miss_o(dtlb_miss_o),
-
         .req_port_i(dcache_req_ports_i[0]),
         .req_port_o(dcache_req_ports_o[0]),
 
@@ -519,10 +559,15 @@ module load_store_unit
       .pop_st_o  (pop_st),
       .commit_i,
       .commit_ready_o,
+      .commit_speculative_empty_o,
       .amo_valid_commit_i,
 
       .valid_o              (st_valid),
       .trans_id_o           (st_trans_id),
+      `ifdef SCAIEV_MEM
+      .has_trans_id_o       (st_has_trans_id),
+      .suppress_wb_o        (st_suppress_wb),
+      `endif
       .result_o             (st_result),
       .ex_o                 (st_ex),
       // MMU port
@@ -565,6 +610,10 @@ module load_store_unit
 
       .valid_o              (ld_valid),
       .trans_id_o           (ld_trans_id),
+      `ifdef SCAIEV_MEM
+      .has_trans_id_o       (ld_has_trans_id),
+      .sv_load_result_valid (sv_load_result_valid),
+      `endif
       .result_o             (ld_result),
       .ex_o                 (ld_ex),
       // MMU port
@@ -595,25 +644,47 @@ module load_store_unit
   // amount of pipeline registers inserted for load/store return path
   // can be tuned to trade-off IPC vs. cycle time
 
-  shift_reg #(
-      .dtype(logic [$bits(ld_valid) + $bits(ld_trans_id) + $bits(ld_result) + $bits(ld_ex) - 1:0]),
-      .Depth(CVA6Cfg.NrLoadPipeRegs)
-  ) i_pipe_reg_load (
-      .clk_i,
-      .rst_ni,
-      .d_i({ld_valid, ld_trans_id, ld_result, ld_ex}),
-      .d_o({load_valid_o, load_trans_id_o, load_result_o, load_exception_o})
-  );
+  `ifdef SCAIEV_MEM
+    assign scaiev_execute_rdMem_result = load_result_o;
+    shift_reg #(
+        .dtype ( logic[ 1 + $bits(ld_valid) + $bits(ld_trans_id) + $bits(ld_result) + $bits(ld_ex) + 1 - 1: 0]),
+        .Depth ( cva6_config_pkg::CVA6ConfigNrLoadPipeRegs )
+    ) i_pipe_reg_load (
+        .clk_i,
+        .rst_ni,
+        .d_i ( {sv_load_result_valid, ld_valid, ld_trans_id, ld_result, ld_ex, ld_has_trans_id} ),
+        .d_o ( {scaiev_execute_rdMem_result_valid, load_valid_o, load_trans_id_o, load_result_o, load_exception_o, load_has_trans_id_o} )
+    );
+    shift_reg #(
+        .dtype(logic [$bits(st_valid) + $bits(st_trans_id) + $bits(st_result) + $bits(st_ex) + 2 - 1:0]),
+        .Depth(CVA6Cfg.NrStorePipeRegs)
+    ) i_pipe_reg_store (
+        .clk_i,
+        .rst_ni,
+        .d_i({st_valid, st_trans_id, st_result, st_ex, st_has_trans_id, st_suppress_wb}),
+        .d_o({store_valid_o, store_trans_id_o, store_result_o, store_exception_o, store_has_trans_id_o, store_suppress_wb_o})
+    );
+  `else
+    shift_reg #(
+        .dtype ( logic[$bits(ld_valid) + $bits(ld_trans_id) + $bits(ld_result) + $bits(ld_ex) - 1: 0]),
+        .Depth ( cva6_config_pkg::CVA6ConfigNrLoadPipeRegs )
+    ) i_pipe_reg_load (
+        .clk_i,
+        .rst_ni,
+        .d_i ( {ld_valid, ld_trans_id, ld_result, ld_ex} ),
+        .d_o ( {load_valid_o, load_trans_id_o, load_result_o, load_exception_o} )
+    );
+    shift_reg #(
+        .dtype(logic [$bits(st_valid) + $bits(st_trans_id) + $bits(st_result) + $bits(st_ex) - 1:0]),
+        .Depth(CVA6Cfg.NrStorePipeRegs)
+    ) i_pipe_reg_store (
+        .clk_i,
+        .rst_ni,
+        .d_i({st_valid, st_trans_id, st_result, st_ex}),
+        .d_o({store_valid_o, store_trans_id_o, store_result_o, store_exception_o})
+    );
+  `endif
 
-  shift_reg #(
-      .dtype(logic [$bits(st_valid) + $bits(st_trans_id) + $bits(st_result) + $bits(st_ex) - 1:0]),
-      .Depth(CVA6Cfg.NrStorePipeRegs)
-  ) i_pipe_reg_store (
-      .clk_i,
-      .rst_ni,
-      .d_i({st_valid, st_trans_id, st_result, st_ex}),
-      .d_o({store_valid_o, store_trans_id_o, store_result_o, store_exception_o})
-  );
 
   // determine whether this is a load or store
   always_comb begin : which_op
@@ -688,11 +759,42 @@ module load_store_unit
   // we can generate the byte enable from the virtual address since the last
   // 12 bit are the same anyway
   // and we can always generate the byte enable from the address at hand
-
+  `ifdef SCAIEV_MEM
+  fu_op memOp;
+  always_comb begin
+  memOp = fu_data_i.operation;
+  if(scaiev_execute_wrMem_valid) begin
+    case(scaiev_execute_memSize)
+    0: memOp = SB;
+    1: memOp = SH;
+    2: memOp = SW;
+    3: memOp = SD;
+    default: memOp = SD;
+    endcase
+  end
+  if(scaiev_execute_rdMem_valid) begin
+    case(scaiev_execute_memSize)
+    0: memOp = LB;
+    1: memOp = LH;
+    2: memOp = LW;
+    3: memOp = LD;
+    default: memOp = LD;
+    endcase
+  end
+  end
+  `endif
   if (CVA6Cfg.IS_XLEN64) begin : gen_8b_be
+  `ifdef SCAIEV_MEM
+    assign be_i = be_gen(vaddr_i[2:0], extract_transfer_size(memOp));
+  `else
     assign be_i = be_gen(vaddr_i[2:0], extract_transfer_size(fu_data_i.operation));
+  `endif
   end else begin : gen_4b_be
+  `ifdef SCAIEV_MEM
+    assign be_i = be_gen_32(vaddr_i[1:0], extract_transfer_size(memOp));
+  `else
     assign be_i = be_gen_32(vaddr_i[1:0], extract_transfer_size(fu_data_i.operation));
+  `endif
   end
 
   // ------------------------
@@ -839,7 +941,41 @@ module load_store_unit
   // ------------------
   // new data arrives here
   lsu_ctrl_t lsu_req_i;
-
+  `ifdef SCAIEV_MEM
+  assign lsu_req_i = (scaiev_execute_wrMem_valid || scaiev_execute_rdMem_valid) ? {
+    1'b1,
+    scaiev_execute_rdMem_valid | scaiev_execute_wrMem_valid,
+    vaddr_i,
+    tinst_i,
+    hs_ld_st_inst,
+    hlvx_inst,
+    overflow,
+    g_overflow,
+    scaiev_execute_wrMem_valid ? scaiev_execute_wrMem : fu_data_i.operand_b,
+    be_i,
+    scaiev_execute_rdMem_valid ? LOAD : STORE,
+    memOp,
+    scaiev_execute_wrMem_suppress_wb, //suppress_st_wb
+    scaiev_execute_mem_has_trans_id, //has_trans_id
+    scaiev_execute_mem_trans_id
+  } : {
+    1'b0,
+    lsu_valid_i,
+    vaddr_i,
+    tinst_i,
+    hs_ld_st_inst,
+    hlvx_inst,
+    overflow,
+    g_overflow,
+    fu_data_i.operand_b,
+    be_i,
+    fu_data_i.fu,
+    fu_data_i.operation,
+    1'b0, //suppress_st_wb
+    1'b1, //has_trans_id
+    fu_data_i.trans_id
+  };
+  `else
   assign lsu_req_i = {
     lsu_valid_i,
     vaddr_i,
@@ -854,6 +990,8 @@ module load_store_unit
     fu_data_i.operation,
     fu_data_i.trans_id
   };
+  `endif
+
 
   lsu_bypass #(
       .CVA6Cfg(CVA6Cfg),
@@ -863,12 +1001,15 @@ module load_store_unit
       .rst_ni,
       .flush_i,
       .lsu_req_i      (lsu_req_i),
-      .lsu_req_valid_i(lsu_valid_i),
+      .lsu_req_valid_i(lsu_valid_i `ifdef SCAIEV_MEM | ((scaiev_execute_rdMem_valid | scaiev_execute_wrMem_valid) & scaiev_execute_mem_ready) `endif ),
       .pop_ld_i       (pop_ld),
       .pop_st_i       (pop_st),
 
       .lsu_ctrl_o(lsu_ctrl_byp),
       .ready_o   (lsu_ready_o)
+      `ifdef SCAIEV_MEM
+      ,.scaiev_execute_mem_ready
+      `endif
   );
 
   assign rvfi_lsu_ctrl_o = lsu_ctrl;

@@ -198,6 +198,9 @@ package ariane_pkg;
     CVXIF,      // 9
     ACCEL,      // 10
     AES         // 11
+    `ifdef SCAIEV_ENABLE
+    , SCAIEV    // 12
+    `endif
   } fu_t;
 
   // Index of writeback ports
@@ -207,6 +210,7 @@ package ariane_pkg;
   localparam FPU_WB = 3;
   localparam ACC_WB = 4;
   localparam X_WB = 4;
+  localparam SV_WB = 4;
 
   localparam EXC_OFF_RST = 8'h80;
 

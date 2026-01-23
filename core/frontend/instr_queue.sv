@@ -48,6 +48,9 @@ module instr_queue
 #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty,
     parameter type fetch_entry_t = logic
+    `ifdef SCAIEV_ZOL
+    ,parameter INSTRQUEUE_ID_WIDTH = 1
+    `endif
 ) (
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
@@ -86,6 +89,17 @@ module instr_queue
     output logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_valid_o,
     // Handshake’s ready with ID_STAGE - ID_STAGE
     input logic [CVA6Cfg.NrIssuePorts-1:0] fetch_entry_ready_i
+
+    `ifdef SCAIEV_ZOL
+    ,output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][INSTRQUEUE_ID_WIDTH-1:0] scaiev_realign_instrqueueID
+    ,output logic [CVA6Cfg.NrIssuePorts-1:0][INSTRQUEUE_ID_WIDTH-1:0] scaiev_decode_instrqueueID
+    ,input logic [CVA6Cfg.VLEN-1:0] scaiev_decode_pcOverride
+    ,input logic scaiev_decode_pcOverride_valid
+    `endif
+    `ifdef SCAIEV_ENABLE
+    ,output logic [CVA6Cfg.INSTR_PER_FETCH-1:0] scaiev_realign_isStalling
+    ,output logic scaiev_realign_isFlushing
+    `endif
 );
 
   // Calculate next index based on whether superscalar is enabled or not.
@@ -108,6 +122,10 @@ module instr_queue
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] pop_instr;
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] instr_queue_full;
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] instr_queue_empty;
+  `ifdef SCAIEV_ZOL
+  logic [CVA6Cfg.INSTR_PER_FETCH-1:0] [$clog2(ariane_pkg::FETCH_FIFO_DEPTH)-1:0] instr_queue_readAddr;
+  logic [CVA6Cfg.INSTR_PER_FETCH-1:0] [$clog2(ariane_pkg::FETCH_FIFO_DEPTH)-1:0] instr_queue_writeAddr;
+  `endif
   logic                               instr_overflow;
   // address queue
   logic [           CVA6Cfg.VLEN-1:0] address_out;
@@ -228,6 +246,16 @@ module instr_queue
       end
       /* verilator lint_on WIDTH */
     end
+    `ifdef SCAIEV_ENABLE
+    for (genvar i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin : gen_scaiev_queueid
+      logic [CVA6Cfg.LOG2_INSTR_PER_FETCH-1:0] idx_i;
+      assign idx_i = i-idx_is_q;
+      //The address into and ID of the queue where instr_i[i] is written to.
+      assign scaiev_realign_instrqueueID[i] = {instr_queue_writeAddr[idx_i], idx_i};
+      //Whether instr_i[i] is being (not) passed on to a queue.
+      assign scaiev_realign_isStalling[i] = (!fifo_pos[idx_i] || instr_queue_full[idx_i]) || address_overflow;
+    end
+   `endif
   end else begin : gen_multiple_instr_per_fetch_without_C
 
     assign taken = '0;
@@ -263,8 +291,27 @@ module instr_queue
       assign instr_data_in[0].ex_tinst = '0;
       assign instr_data_in[0].ex_gva = 1'b0;
     end
+    `ifdef SCAIEV_ENABLE
+    //The address into and ID of the queue where instr_i[i] is written to.
+    if (CVA6Cfg.INSTR_PER_FETCH > 1) begin
+      for (genvar i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin : gen_scaiev_queueid
+        logic [CVA6Cfg.LOG2_INSTR_PER_FETCH-1:0] idx_i;
+        assign idx_i = i;
+        assign scaiev_realign_instrqueueID[i] = {instr_queue_writeAddr[i], idx_i};
+        assign scaiev_realign_isStalling[i] = (!valid_i[i] || instr_queue_full[i]) || address_overflow;
+      end
+    end
+    else begin
+      assign scaiev_realign_instrqueueID[0] = instr_queue_writeAddr[0];
+      assign scaiev_realign_isStalling[0] = valid_i[0] || instr_queue_full[0] || address_overflow;
+    end
+   `endif
     /* verilator lint_on WIDTH */
   end
+  `ifdef SCAIEV_ENABLE
+  //assign scaiev_realign_isStalling = (&(~valid_i | (instr_queue_full & fifo_pos))) | address_overflow;
+  assign scaiev_realign_isFlushing = flush_i | replay_o;
+  `endif
 
   // ----------------------
   // Replay Logic
@@ -319,6 +366,9 @@ module instr_queue
       idx_ds_d  = idx_ds_q;
 
       pop_instr = '0;
+      `ifdef SCAIEV_ZOL
+      scaiev_decode_instrqueueID = '0;
+      `endif
       // assemble fetch entry
       for (int unsigned i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
         fetch_entry_o[i].instruction = '0;
@@ -358,6 +408,9 @@ module instr_queue
           end
           fetch_entry_o[0].branch_predict.cf = instr_data_out[i].cf;
           pop_instr[i] = fetch_entry_fire[0];
+          `ifdef SCAIEV_ZOL
+          scaiev_decode_instrqueueID[0] = {instr_queue_readAddr[i], CVA6Cfg.LOG2_INSTR_PER_FETCH'(i)};
+          `endif
         end
 
         if (CVA6Cfg.SuperscalarEn) begin
@@ -373,6 +426,9 @@ module instr_queue
             fetch_entry_o[NID].branch_predict.cf = instr_data_out[i].cf;
             // Cannot output two CF the same cycle.
             pop_instr[i] = fetch_entry_fire[NID];
+            `ifdef SCAIEV_ZOL
+            scaiev_decode_instrqueueID[NID] = {instr_queue_readAddr[i], CVA6Cfg.LOG2_INSTR_PER_FETCH'(i)};
+            `endif
           end
         end
       end
@@ -390,7 +446,7 @@ module instr_queue
       idx_ds_d = '0;
       idx_is_d = '0;
       fetch_entry_o[0].instruction = instr_data_out[0].instr;
-      fetch_entry_o[0].address = pc_q;
+      fetch_entry_o[0].address = pc_j[0];
 
       fetch_entry_o[0].ex.valid = instr_data_out[0].ex != ariane_pkg::FE_NONE;
       if (instr_data_out[0].ex == ariane_pkg::FE_INSTR_ACCESS_FAULT) begin
@@ -415,6 +471,9 @@ module instr_queue
       fetch_entry_o[0].branch_predict.cf = instr_data_out[0].cf;
 
       pop_instr[0] = fetch_entry_valid_o[0] & fetch_entry_ready_i[0];
+      `ifdef SCAIEV_ZOL
+      scaiev_decode_instrqueueID[0] = instr_queue_readAddr[0];
+      `endif
     end
   end
 
@@ -428,7 +487,7 @@ module instr_queue
   // ----------------------
   // Calculate (Next) PC
   // ----------------------
-  assign pc_j[0] = pc_q;
+  assign pc_j[0] = `ifdef SCAIEV_ZOL scaiev_decode_pcOverride_valid ? scaiev_decode_pcOverride : `endif pc_q;
   for (genvar i = 0; i < CVA6Cfg.NrIssuePorts; i++) begin
     assign pc_j[i+1] = fetch_entry_is_cf[i] ? address_out : (
       pc_j[i] + ((fetch_entry_o[i].instruction[1:0] != 2'b11) ? 'd2 : 'd4)
@@ -436,7 +495,7 @@ module instr_queue
   end
 
   always_comb begin
-    pc_d = pc_q;
+    pc_d = pc_j[0];
     reset_address_d = flush_i ? 1'b1 : reset_address_q;
 
     if (fetch_entry_fire[0]) begin
@@ -477,6 +536,10 @@ module instr_queue
         .push_i    (push_instr_fifo[i]),
         .data_o    (instr_data_out[i]),
         .pop_i     (pop_instr[i])
+      `ifdef SCAIEV_ZOL
+        ,.write_pointer_o(instr_queue_writeAddr[i])
+        ,.read_pointer_o (instr_queue_readAddr[i])
+      `endif
     );
   end
   // or reduce and check whether we are retiring a taken branch (might be that the corresponding)
@@ -489,6 +552,7 @@ module instr_queue
     end
   end
 
+  wire fifo_address_push = push_address & ~full_address;
   cva6_fifo_v3 #(
       .FPGA_ALTERA(CVA6Cfg.FpgaAlteraEn),
       .DEPTH      (ariane_pkg::FETCH_ADDR_FIFO_DEPTH),
@@ -503,7 +567,7 @@ module instr_queue
       .empty_o   (),
       .usage_o   (),
       .data_i    (predict_address_i),
-      .push_i    (push_address & ~full_address),
+      .push_i    (fifo_address_push),
       .data_o    (address_out),
       .pop_i     (pop_address)
   );
@@ -552,7 +616,7 @@ module instr_queue
 
   // pragma translate_off
   replay_address_fifo :
-  assert property (@(posedge clk_i) disable iff (!rst_ni) replay_o |-> !i_fifo_address.push_i)
+  assert property (@(posedge clk_i) disable iff (!rst_ni) replay_o |-> !fifo_address_push)
   else $fatal(1, "[instr_queue] Pushing address although replay asserted");
 
   output_select_onehot :

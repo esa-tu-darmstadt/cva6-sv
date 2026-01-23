@@ -20,6 +20,17 @@ module commit_stage
     parameter type exception_t = logic,
     parameter type scoreboard_entry_t = logic
 ) (
+    `ifdef SCAIEV_STATE
+    output logic [CVA6Cfg.NrCommitPorts-1:0] scaiev_commit_trans_id_valid,
+    output logic [CVA6Cfg.NrCommitPorts-1:0] scaiev_commit_drop,
+    output logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_commit_trans_id,
+    output logic [CVA6Cfg.NrCommitPorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_commit_PC,
+    `endif
+    `ifdef SCAIEV_ENABLE
+    input logic scaiev_writeback_spawn_valid,
+    input logic [CVA6Cfg.XLEN-1:0] scaiev_writeback_spawn_data,
+    input logic [4:0] scaiev_writeback_spawn_addr,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -68,6 +79,8 @@ module commit_stage
     output logic commit_lsu_o,
     // Commit buffer of LSU is ready - EX_STAGE
     input logic commit_lsu_ready_i,
+    // Speculative store queue is empty (SCAIE-V) - EX_STAGE
+    input logic commit_lsu_speculative_empty_i,
     // Transaction id of first commit port - ID_STAGE
     output logic [CVA6Cfg.TRANS_ID_BITS-1:0] commit_tran_id_o,
     // Valid AMO in commit stage - EX_STAGE
@@ -89,23 +102,12 @@ module commit_stage
     // TO_BE_COMPLETED - CONTROLLER
     output logic hfence_gvma_o
 );
-
-  // ila_0 i_ila_commit (
-  //     .clk(clk_i), // input wire clk
-  //     .probe0(commit_instr_i[0].pc), // input wire [63:0]  probe0
-  //     .probe1(commit_instr_i[1].pc), // input wire [63:0]  probe1
-  //     .probe2(commit_instr_i[0].valid), // input wire [0:0]  probe2
-  //     .probe3(commit_instr_i[1].valid), // input wire [0:0]  probe3
-  //     .probe4(commit_ack_o[0]), // input wire [0:0]  probe4
-  //     .probe5(commit_ack_o[0]), // input wire [0:0]  probe5
-  //     .probe6(1'b0), // input wire [0:0]  probe6
-  //     .probe7(1'b0), // input wire [0:0]  probe7
-  //     .probe8(1'b0), // input wire [0:0]  probe8
-  //     .probe9(1'b0) // input wire [0:0]  probe9
-  // );
-
   for (genvar i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin : gen_waddr
+    `ifdef SCAIEV_ENABLE
+    assign waddr_o[i] = (i == CVA6Cfg.NrCommitPorts-1 && scaiev_writeback_spawn_valid) ? scaiev_writeback_spawn_addr : commit_instr_i[i].rd;
+    `else
     assign waddr_o[i] = commit_instr_i[i].rd;
+    `endif
   end
 
   assign pc_o = commit_instr_i[0].pc;
@@ -126,6 +128,12 @@ module commit_stage
 
   logic instr_0_is_amo;
   logic [CVA6Cfg.NrCommitPorts-1:0] commit_macro_ack;
+  logic [CVA6Cfg.NrCommitPorts-1:0] sv_halt_on_gpr;
+  `ifdef SCAIEV_ENABLE
+  assign sv_halt_on_gpr = {scaiev_writeback_spawn_valid, {(CVA6Cfg.NrCommitPorts-1){1'b0}}};
+  `else
+  assign sv_halt_on_gpr = '0;
+  `endif
   assign instr_0_is_amo = is_amo(commit_instr_i[0].op);
   // -------------------
   // Commit Instruction
@@ -162,7 +170,7 @@ module commit_stage
         if (commit_drop_i[0]) begin
           commit_ack_o[0] = 1'b1;
         end
-      end else begin
+      end else if (!sv_halt_on_gpr[0]) begin
         commit_ack_o[0] = 1'b1;
 
         if (CVA6Cfg.RVZCMP && commit_instr_i[0].is_macro_instr && commit_instr_i[0].is_last_macro_instr)
@@ -184,8 +192,16 @@ module commit_stage
           // check if the LSU is ready to accept another commit entry (e.g.: a non-speculative store)
           if (commit_lsu_ready_i) begin
             commit_lsu_o = 1'b1;
-            // stall in case the store buffer is not able to accept anymore instructions
+            `ifdef SCAIEV_MEM
+            if (commit_instr_i[0].is_scaiev && commit_lsu_speculative_empty_i) begin
+              // Timing: SCAIE-V instruction may commit while request has not yet arrived (or registered) at the LSU.
+              // -> Prevent underflow in speculative store queue.
+              commit_lsu_o = 1'b0;
+              commit_ack_o[0] = 1'b0;
+            end
+            `endif
           end else begin
+            // stall in case the store buffer is not able to accept anymore instructions
             commit_ack_o[0] = 1'b0;
           end
         end
@@ -314,7 +330,7 @@ module commit_stage
       // check if the second instruction can be committed as well and the first wasn't a CSR instruction
       // also if we are in single step mode don't retire the second instruction
       if (commit_ack_o[0] && commit_instr_i[1].valid
-                                && !halt_i
+                                && !halt_i && !sv_halt_on_gpr[1]
                                 && !(commit_instr_i[0].fu inside {CSR})
                                 && !flush_dcache_i
                                 && !(CVA6Cfg.RVA && instr_0_is_amo)
@@ -356,8 +372,22 @@ module commit_stage
         commit_macro_ack_o[i] = commit_instr_i[i].is_macro_instr ? commit_macro_ack[i] : commit_ack_o[i];
       end
     end else commit_macro_ack_o = commit_ack_o;
+    `ifdef SCAIEV_ENABLE
+    if (scaiev_writeback_spawn_valid) begin
+      we_gpr_o[CVA6Cfg.NrCommitPorts-1] = 1'b1;
+      wdata_o[CVA6Cfg.NrCommitPorts-1] = scaiev_writeback_spawn_data;
+    end
+    `endif
   end
 
+  `ifdef SCAIEV_STATE
+  assign scaiev_commit_trans_id_valid = commit_ack_o;
+  assign scaiev_commit_drop = commit_drop_i;
+  for (genvar i = 0; i < CVA6Cfg.NrCommitPorts; i++) begin : sv_commit_id
+    assign scaiev_commit_trans_id[i] = commit_instr_i[i].trans_id;
+    assign scaiev_commit_PC[i] = commit_instr_i[i].pc;
+  end
+  `endif
   // -----------------------------
   // Exception & Interrupt Logic
   // -----------------------------

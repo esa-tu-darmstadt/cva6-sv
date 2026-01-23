@@ -23,7 +23,41 @@ module frontend
     parameter type fetch_entry_t = logic,
     parameter type icache_dreq_t = logic,
     parameter type icache_drsp_t = logic
+    `ifdef SCAIEV_ZOL
+    ,parameter type icache_dreqid_t = logic
+    ,parameter INSTRQUEUE_ID_WIDTH = 1
+    `endif
 ) (
+    `ifdef SCAIEV_ENABLE
+    output logic [CVA6Cfg.XLEN-1:0] scaiev_fetch_PC,
+    output logic [CVA6Cfg.INSTR_PER_FETCH-1:0] scaiev_realign_isValid,
+    output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][31:0] scaiev_realign_rdInstr,
+    output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][CVA6Cfg.XLEN-1:0] scaiev_realign_PC,
+    output logic scaiev_fetch_isStalling,
+    output logic scaiev_fetch_isFlushing,
+    output logic scaiev_fetch_isReplaying,
+    input  logic scaiev_fetch_ignoreReplay,
+    input  logic scaiev_fetch_stall,
+    output logic [CVA6Cfg.INSTR_PER_FETCH-1:0] scaiev_realign_isStalling,
+    output logic scaiev_realign_isFlushing,
+    input  logic scaiev_realign_isBranch,
+    input  logic scaiev_realign_isJump,
+    //input logic scaiev_realign_isZOLJump,
+    //input  logic [63:0] scaiev_realign_jumpAddr,
+    input  logic scaiev_fetch_wrPCValid,
+    input  logic [CVA6Cfg.VLEN-1:0] scaiev_fetch_wrPC,
+    `endif
+    `ifdef SCAIEV_ZOL
+    output icache_dreqid_t scaiev_fetch_reqID,
+    output icache_dreqid_t scaiev_realign_reqID,
+    output icache_dreqid_t scaiev_fetch_reqID_flushFrom,
+    output logic [$bits(icache_dreqid_t):0] scaiev_fetch_reqID_flushCount,
+    output logic [CVA6Cfg.INSTR_PER_FETCH-1:0][INSTRQUEUE_ID_WIDTH-1:0] scaiev_realign_instrqueueID,
+    output logic scaiev_realign_fully_unaligned,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][INSTRQUEUE_ID_WIDTH-1:0] scaiev_decode_instrqueueID,
+    input logic [CVA6Cfg.VLEN-1:0] scaiev_decode_pcOverride,
+    input logic scaiev_decode_pcOverride_valid,
+    `endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -170,7 +204,79 @@ module frontend
       .valid_o            (instruction_valid),
       .addr_o             (addr),
       .instr_o            (instr)
+      `ifdef SCAIEV_ZOL
+      ,.scaiev_realign_fully_unaligned
+      `endif
   );
+  logic bp_valid;
+  `ifdef SCAIEV_ZOL
+  icache_dreqid_t fetch_s2_reqID_d;
+  icache_dreqid_t scaiev_fetch_reqID_d, scaiev_fetch_reqID_next, scaiev_fetch_reqID_q;
+  icache_dreqid_t scaiev_realign_reqID_q;
+
+  always_comb begin
+    //bp_valid is set based on the instruction word from realign
+    scaiev_fetch_reqID_d = bp_valid ? (scaiev_realign_reqID_q + 1) : scaiev_fetch_reqID_q;
+    //bp_valid -> flush scaiev_realign_reqID_q+1 .. scaiev_fetch_reqID_q inclusive
+    scaiev_fetch_reqID_flushFrom = scaiev_realign_reqID_q + 1;
+    scaiev_fetch_reqID_flushCount = bp_valid ? (scaiev_fetch_reqID_q - scaiev_realign_reqID_q) : '0;
+
+    if (icache_dreq_o.kill_s2) begin
+      if (icache_dreq_o.kill_s1) begin
+        scaiev_fetch_reqID_d = scaiev_realign_reqID_q;
+        //kill_s2 && kill_s1 -> flush scaiev_realign_reqID_q .. scaiev_fetch_reqID_q inclusive
+        scaiev_fetch_reqID_flushFrom = scaiev_realign_reqID_q;
+        scaiev_fetch_reqID_flushCount = scaiev_fetch_reqID_q - scaiev_realign_reqID_q + 1;
+      end
+      else begin
+        scaiev_fetch_reqID_d = fetch_s2_reqID_d; //last cycle's scaiev_fetch_reqID_d
+        //kill_s2 && !kill_s1 -> flush scaiev_realign_reqID_q .. fetch_s2_reqID_d exclusive
+        scaiev_fetch_reqID_flushFrom = scaiev_realign_reqID_q;
+        scaiev_fetch_reqID_flushCount = fetch_s2_reqID_d - scaiev_realign_reqID_q;
+      end
+    end
+  end
+  always_comb begin
+    scaiev_fetch_reqID_next = scaiev_fetch_reqID_d;
+    if (icache_dreq_o.req && icache_dreq_i.ready && !icache_dreq_o.kill_s1) begin
+      scaiev_fetch_reqID_next = scaiev_fetch_reqID_d + 1;
+    end
+  end
+  assign icache_dreq_o.reqid = scaiev_fetch_reqID_d;
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      scaiev_fetch_reqID_q <= '0;
+    end
+    else begin
+      scaiev_fetch_reqID_q <= scaiev_fetch_reqID_next;
+    end
+  end
+
+  assign scaiev_fetch_reqID = scaiev_fetch_reqID_d;
+
+  assign fetch_s2_reqID_d = icache_dreq_i.reqid;
+
+  always_ff @(posedge clk_i) begin
+    if (!rst_ni) begin
+      scaiev_realign_reqID_q <= '0;
+    end
+    else begin
+      if (icache_dreq_i.valid)
+        scaiev_realign_reqID_q <= icache_dreq_i.reqid;
+    end
+  end
+  assign scaiev_realign_reqID = scaiev_realign_reqID_q;
+
+  //assign scaiev_realign_isFlushing = icache_dreq_o.kill_s2; //includes 'queue full' (-> replay fetch)
+  `endif
+  `ifdef SCAIEV_ENABLE
+  for (genvar i = 0; i < CVA6Cfg.INSTR_PER_FETCH; i++) begin
+    assign scaiev_realign_isValid[i] = instruction_valid[i];
+    assign scaiev_realign_PC[i] = instruction_valid[i] ? addr[i] : 0;
+    assign scaiev_realign_rdInstr[i] = instruction_valid[i] ? instr[i] : 0;
+  end
+  `endif
   // --------------------
   // Branch Prediction
   // --------------------
@@ -199,7 +305,6 @@ module frontend
 
   // for the return address stack it doesn't matter as we have the
   // address of the call/return already
-  logic bp_valid;
 
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] is_branch;
   logic [CVA6Cfg.INSTR_PER_FETCH-1:0] is_call;
@@ -215,10 +320,27 @@ module frontend
     // function return -> RAS
     assign is_return[i] = instruction_valid[i] & (rvi_return[i] | rvc_return[i]);
     // unconditional jumps with known target -> immediately resolved
-    assign is_jump[i] = instruction_valid[i] & (rvi_jump[i] | rvc_jump[i]);
+    `ifdef SCAIEV_ZOL
+      if(i == CVA6Cfg.INSTR_PER_FETCH - 1) begin
+        assign is_jump[i] = instruction_valid[i] & (rvi_jump[i] | rvc_jump[i]);// | scaiev_realign_isZOLJump);
+      end else begin
+        assign is_jump[i] = instruction_valid[i] & (rvi_jump[i] | rvc_jump[i]);// | (scaiev_realign_isZOLJump && !instruction_valid[i+1]));
+      end
+
+      `else
+      // unconditional jumps with known target -> immediately resolved
+      assign is_jump[i] = instruction_valid[i] & (rvi_jump[i] | rvc_jump[i]);
+      `endif
     // unconditional jumps with unknown target -> BTB
     assign is_jalr[i] = instruction_valid[i] & ~is_return[i] & (rvi_jalr[i] | rvc_jalr[i] | rvc_jr[i]);
   end
+
+  `ifdef SCAIEV_ZOL
+  logic [CVA6Cfg.VLEN-1:0] scaiev_preFetch_PC;
+  logic [CVA6Cfg.VLEN-1:0] scaiev_preFetch_wrPC;
+  logic scaiev_preFetch_wrPCValid;
+  assign scaiev_preFetch_wrPCValid = 0;
+  `endif
 
   // taken/not taken
   always_comb begin
@@ -309,8 +431,8 @@ module frontend
 
   // Cache interface
   // Gate ICache requests and NPC updates during fence.i
-  assign icache_dreq_o.req = instr_queue_ready & ~halt_frontend_i;
-  assign if_ready = icache_dreq_i.ready & instr_queue_ready & ~halt_frontend_i;
+  assign icache_dreq_o.req = instr_queue_ready & ~halt_frontend_i `ifdef SCAIEV_ENABLE & ~scaiev_fetch_stall `endif ;
+  assign if_ready = icache_dreq_i.ready & instr_queue_ready & ~halt_frontend_i `ifdef SCAIEV_ENABLE & ~scaiev_fetch_stall `endif ;
   // We need to flush the cache pipeline if:
   // 1. We mispredicted
   // 2. Want to flush the whole processor front-end
@@ -340,6 +462,15 @@ module frontend
   assign btb_update.pc = resolved_branch_i.pc;
   assign btb_update.target_address = resolved_branch_i.target_address;
 
+  logic preFetch_isFlushing;
+  logic preFetch_isStalling;
+  `ifdef SCAIEV_ZOL
+  assign scaiev_fetch_PC = npc_q;
+  assign scaiev_fetch_isStalling = replay || !icache_dreq_i.ready || !instr_queue_ready || halt_frontend_i;
+  assign scaiev_fetch_isFlushing = icache_dreq_o.kill_s1;
+  assign scaiev_fetch_isReplaying = replay;
+  `endif
+
   // -------------------
   // Next PC
   // -------------------
@@ -354,6 +485,8 @@ module frontend
   // select PC a.k.a PC Gen
   always_comb begin : npc_select
     automatic logic [CVA6Cfg.VLEN-1:0] fetch_address;
+    preFetch_isFlushing = 1'b0;
+    preFetch_isStalling = 1'b0;
     // check whether we come out of reset
     // this is a workaround. some tools have issues
     // having boot_addr_i in the asynchronous
@@ -376,24 +509,40 @@ module frontend
     // 1. Default assignment
     if (if_ready) begin
       npc_d = {
-        fetch_address[CVA6Cfg.VLEN-1:CVA6Cfg.FETCH_ALIGN_BITS] + 1, {CVA6Cfg.FETCH_ALIGN_BITS{1'b0}}
+        fetch_address[CVA6Cfg.VLEN-1:CVA6Cfg.FETCH_ALIGN_BITS] + {{(CVA6Cfg.VLEN-CVA6Cfg.FETCH_ALIGN_BITS-1){1'b0}},1'b1}, {CVA6Cfg.FETCH_ALIGN_BITS{1'b0}}
       };
     end
+    `ifdef SCAIEV_ZOL
+    if (scaiev_fetch_wrPCValid) begin
+       npc_d = (instr_queue_ready && !flush_i && !(replay && scaiev_fetch_ignoreReplay))
+               ? {scaiev_fetch_wrPC[CVA6Cfg.VLEN-1:CVA6Cfg.FETCH_ALIGN_BITS] + {{(CVA6Cfg.VLEN-CVA6Cfg.FETCH_ALIGN_BITS-1){1'b0}},1'b1}, {CVA6Cfg.FETCH_ALIGN_BITS{1'b0}}}
+               : scaiev_fetch_wrPC;
+       if(!flush_i && !(replay && scaiev_fetch_ignoreReplay)) fetch_address = scaiev_fetch_wrPC;
+    end
+    `endif
     // 2. Replay instruction fetch
-    if (replay) begin
+    if (replay `ifdef SCAIEV_ZOL && !scaiev_fetch_ignoreReplay `endif ) begin
       npc_d = replay_addr;
     end
     // 3. Control flow change request
     if (is_mispredict) begin
       npc_d = resolved_branch_i.target_address;
     end
+    `ifdef SCAIEV_ZOL
+    scaiev_preFetch_PC = npc_d;
+    if (scaiev_preFetch_wrPCValid && !preFetch_isFlushing) begin
+       npc_d = scaiev_preFetch_wrPC;
+    end
+    `endif
     // 4. Return from environment call
     if (eret_i) begin
       npc_d = epc_i;
+      preFetch_isFlushing = 1'b1;
     end
     // 5. Exception/Interrupt
     if (ex_valid_i) begin
       npc_d = trap_vector_base_i;
+      preFetch_isFlushing = 1'b1;
     end
     // 6. Pipeline Flush because of CSR side effects
     // On a pipeline flush start fetching from the next address
@@ -406,11 +555,14 @@ module frontend
     // TODO(zarubaf) This adder can at least be merged with the one in the csr_regfile stage
     if (set_pc_commit_i) begin
       npc_d = pc_commit_i + (halt_i ? '0 : {{CVA6Cfg.VLEN - 3{1'b0}}, 3'b100});
+      preFetch_isFlushing = 1'b1;
     end
     // 7. Debug
     // enter debug on a hard-coded base-address
-    if (CVA6Cfg.DebugEn && set_debug_pc_i)
+    if (CVA6Cfg.DebugEn && set_debug_pc_i) begin
       npc_d = CVA6Cfg.DmBaseAddress[CVA6Cfg.VLEN-1:0] + CVA6Cfg.HaltAddress[CVA6Cfg.VLEN-1:0];
+      preFetch_isFlushing = 1'b1;
+    end
     icache_dreq_o.vaddr = fetch_address;
   end
 
@@ -561,12 +713,21 @@ module frontend
         .rvc_jalr_o  (rvc_jalr[i]),
         .rvc_call_o  (rvc_call[i]),
         .rvc_imm_o   (rvc_imm[i])
+        `ifdef SCAIEV_BRANCH
+        ,.scaiev_realign_isBranch
+        `endif
+        `ifdef SCAIEV_JUMP
+        ,.scaiev_realign_isJump
+        `endif
     );
   end
 
   instr_queue #(
       .CVA6Cfg(CVA6Cfg),
       .fetch_entry_t(fetch_entry_t)
+      `ifdef SCAIEV_ZOL
+      ,.INSTRQUEUE_ID_WIDTH(INSTRQUEUE_ID_WIDTH)
+      `endif
   ) i_instr_queue (
       .clk_i              (clk_i),
       .rst_ni             (rst_ni),
@@ -588,6 +749,16 @@ module frontend
       .fetch_entry_o      (fetch_entry_o),         // to back-end
       .fetch_entry_valid_o(fetch_entry_valid_o),   // to back-end
       .fetch_entry_ready_i(fetch_entry_ready_i)    // to back-end
+      `ifdef SCAIEV_ZOL
+      ,.scaiev_realign_instrqueueID(scaiev_realign_instrqueueID)
+      ,.scaiev_decode_instrqueueID(scaiev_decode_instrqueueID)
+      ,.scaiev_decode_pcOverride(scaiev_decode_pcOverride)
+      ,.scaiev_decode_pcOverride_valid(scaiev_decode_pcOverride_valid)
+      `endif
+      `ifdef SCAIEV_ENABLE
+      ,.scaiev_realign_isStalling(scaiev_realign_isStalling)
+      ,.scaiev_realign_isFlushing(scaiev_realign_isFlushing)
+      `endif
   );
 
 endmodule

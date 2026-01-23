@@ -36,6 +36,9 @@ module cva6_icache
     parameter type icache_drsp_t = logic,
     parameter type icache_req_t = logic,
     parameter type icache_rtrn_t = logic,
+    `ifdef SCAIEV_ZOL
+    parameter type icache_dreqid_t = logic,
+    `endif
     /// ID to be used for read transactions
     parameter logic [CVA6Cfg.MEM_TID_WIDTH-1:0] RdTxId = 0
 ) (
@@ -78,6 +81,9 @@ module cva6_icache
   // signals
   logic cache_en_d, cache_en_q;  // cache is enabled
   logic [CVA6Cfg.VLEN-1:0] vaddr_d, vaddr_q;
+  `ifdef SCAIEV_ZOL
+  icache_dreqid_t dreqid_q;
+  `endif
   logic paddr_is_nc;  // asserted if physical address is non-cacheable
   logic [CVA6Cfg.ICACHE_SET_ASSOC-1:0] cl_hit;  // hit from tag compare
   logic cache_rden;  // triggers cache lookup
@@ -178,6 +184,9 @@ module cva6_icache
   // way that is being replaced
   assign mem_data_o.way = repl_way;
   assign dreq_o.vaddr   = vaddr_q;
+  `ifdef SCAIEV_ZOL
+  assign dreq_o.reqid   = dreqid_q;
+  `endif
 
   // invalidations take two cycles
   assign inv_d          = inv_en;
@@ -404,7 +413,8 @@ module cva6_icache
       .cnt_o  (inv_way),
       .empty_o(all_ways_valid)
   );
-
+  generate
+  if(CVA6Cfg.ICACHE_SET_ASSOC_WIDTH > 0) begin
   // generate random cacheline index
   lfsr #(
       .LfsrWidth(8),
@@ -415,6 +425,8 @@ module cva6_icache
       .en_i  (update_lfsr),
       .out_o (rnd_way)
   );
+  end
+  endgenerate
 
 
   ///////////////////////////////////////////////////////
@@ -529,6 +541,17 @@ module cva6_icache
       inv_q         <= inv_d;
     end
   end
+  `ifdef SCAIEV_ZOL
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      dreqid_q <= '0;
+    end
+    else begin
+      if (dreq_o.ready)
+        dreqid_q <= dreq_i.reqid;
+    end
+  end
+  `endif
 
   ///////////////////////////////////////////////////////
   // assertions

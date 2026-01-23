@@ -25,6 +25,9 @@ module cva6_hpdcache_subsystem
     parameter type icache_rtrn_t = logic,
     parameter type dcache_req_i_t = logic,
     parameter type dcache_req_o_t = logic,
+    `ifdef SCAIEV_ZOL
+    parameter type icache_dreqid_t = logic,
+    `endif
     parameter int NumPorts = 4,
     parameter int NrHwPrefetchers = 4,
     // AXI types
@@ -155,6 +158,9 @@ module cva6_hpdcache_subsystem
       .icache_drsp_t(icache_drsp_t),
       .icache_req_t(icache_req_t),
       .icache_rtrn_t(icache_rtrn_t),
+      `ifdef SCAIEV_ZOL
+      .icache_dreqid_t(icache_dreqid_t),
+      `endif
       .RdTxId(ICACHE_RDTXID)
   ) i_cva6_icache (
       .clk_i         (clk_i),

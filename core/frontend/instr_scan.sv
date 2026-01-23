@@ -18,6 +18,12 @@
 module instr_scan #(
     parameter config_pkg::cva6_cfg_t CVA6Cfg = config_pkg::cva6_cfg_empty
 ) (
+    `ifdef SCAIEV_BRANCH
+    input logic scaiev_realign_isBranch,
+    `endif
+    `ifdef SCAIEV_JUMP
+    input logic scaiev_realign_isJump,
+    `endif
     // Instruction to be predecoded - instr_realign
     input logic [31:0] instr_i,
     // Return instruction - FRONTEND
@@ -81,9 +87,9 @@ module instr_scan #(
   // Opcode is JAL[R] and destination register is either x1 or x5
   assign rvi_call_o = (rvi_jalr_o | rvi_jump_o) & ((instr_i[11:7] == 5'd1) | instr_i[11:7] == 5'd5);
   // differentiates between JAL and BRANCH opcode, JALR comes from BHT
-  assign rvi_imm_o = is_xret ? '0 : (instr_i[3]) ? uj_imm(instr_i) : sb_imm(instr_i);
-  assign rvi_branch_o = (instr_i[6:0] == riscv::OpcodeBranch);
-  assign rvi_jalr_o = (instr_i[6:0] == riscv::OpcodeJalr);
+  assign rvi_imm_o = is_xret ? '0 : (instr_i[3] `ifdef SCAIEV_BRANCH && !scaiev_realign_isBranch `endif) ? uj_imm(instr_i) : sb_imm(instr_i);
+  assign rvi_branch_o = (instr_i[6:0] == riscv::OpcodeBranch) `ifdef SCAIEV_BRANCH | scaiev_realign_isBranch `endif;
+  assign rvi_jalr_o = (instr_i[6:0] == riscv::OpcodeJalr) `ifdef SCAIEV_JUMP | scaiev_realign_isJump `endif;
   assign rvi_jump_o = logic'(instr_i[6:0] == riscv::OpcodeJal) | is_xret;
 
   // opcode JAL

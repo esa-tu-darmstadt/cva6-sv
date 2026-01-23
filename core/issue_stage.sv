@@ -29,6 +29,25 @@ module issue_stage
     parameter type x_register_t = logic,
     parameter type x_commit_t = logic
 ) (
+`ifdef SCAIEV_ENABLE
+    output fu_data_t [scaiev_config::NrFUIssuePorts-1:0] sv_fu_data_o,
+    output logic [scaiev_config::NrFUIssuePorts-1:0] sv_issue_valid_o,
+    input  logic [scaiev_config::NrFUIssuePorts-1:0] sv_issue_ready_i,
+    output logic [scaiev_config::NrFUIssuePorts-1:0][31:0] sv_off_instr_o,
+    output logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_isStalling,
+    output logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_isValid,
+    output logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_pipeinto_scaievfu,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_issue_PC,
+    input  logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_stall,
+    input  logic [CVA6Cfg.NrIssuePorts-1:0] scaiev_issue_mem_stall,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][31:0] scaiev_issue_rdInstr,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS1,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.XLEN-1:0] scaiev_issue_rdRS2,
+    output logic [CVA6Cfg.NrIssuePorts-1:0][CVA6Cfg.TRANS_ID_BITS-1:0] scaiev_issue_trans_id_o,
+    input  logic scaiev_writeback_spawn_valid,
+    input  logic [CVA6Cfg.XLEN-1:0] scaiev_writeback_spawn_data,
+    input  logic [4:0] scaiev_writeback_spawn_addr,
+`endif
     // Subsystem Clock - SUBSYSTEM
     input logic clk_i,
     // Asynchronous reset active low - SUBSYSTEM
@@ -299,6 +318,24 @@ module issue_stage
       .x_transaction_rejected_o(x_transaction_rejected_o),
       .x_issue_writeback_o     (x_issue_writeback_iro_sb),
       .x_id_o                  (x_id_iro_sb),
+      `ifdef SCAIEV_ENABLE
+      .scaiev_writeback_spawn_valid(scaiev_writeback_spawn_valid),
+      .scaiev_writeback_spawn_data(scaiev_writeback_spawn_data),
+      .scaiev_writeback_spawn_addr(scaiev_writeback_spawn_addr),
+      .sv_fu_data_o       (sv_fu_data_o),
+      .sv_valid_o         (sv_issue_valid_o),
+      .sv_ready_i         (sv_issue_ready_i),
+      .sv_off_instr_o     (sv_off_instr_o),
+      .scaiev_issue_pipeinto_scaievfu(scaiev_issue_pipeinto_scaievfu),
+      .scaiev_issue_isStalling(scaiev_issue_isStalling),
+      .scaiev_issue_PC(scaiev_issue_PC),
+      .scaiev_issue_stall(scaiev_issue_stall),
+      .scaiev_issue_rdInstr(scaiev_issue_rdInstr),
+      .scaiev_issue_rdRS1(scaiev_issue_rdRS1),
+      .scaiev_issue_rdRS2(scaiev_issue_rdRS2),
+      .scaiev_issue_trans_id_o(scaiev_issue_trans_id_o),
+      .scaiev_issue_mem_stall(scaiev_issue_mem_stall),
+      `endif
       .waddr_i,
       .wdata_i,
       .we_gpr_i,
@@ -308,5 +345,9 @@ module issue_stage
       .rvfi_rs2_o              (rvfi_rs2_o),
       .orig_instr_aes_bits     (orig_instr_aes_bits)
   );
+
+  `ifdef SCAIEV_ENABLE
+  assign scaiev_issue_isValid = decoded_instr_valid_i;
+  `endif
 
 endmodule

@@ -197,6 +197,8 @@ module wt_dcache_missunit
   );
 
   // generate random cacheline index
+  generate
+  if(CVA6Cfg.DCACHE_SET_ASSOC > 1) begin
   lfsr #(
       .LfsrWidth(8),
       .OutWidth (CVA6Cfg.DCACHE_SET_ASSOC_WIDTH)
@@ -206,6 +208,9 @@ module wt_dcache_missunit
       .en_i  (update_lfsr),
       .out_o (rnd_way)
   );
+  end
+  endgenerate
+
 
   assign repl_way             = (all_ways_valid) ? rnd_way : inv_way;
 
