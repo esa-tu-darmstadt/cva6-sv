@@ -145,6 +145,7 @@ module frontend
   logic                                       npc_rst_load_q;
 
   logic                                       replay;
+  logic                                       replay_partial;
   logic [                   CVA6Cfg.VLEN-1:0] replay_addr;
 
   // shift amount
@@ -468,7 +469,14 @@ module frontend
   assign scaiev_fetch_PC = npc_q;
   assign scaiev_fetch_isStalling = replay || !icache_dreq_i.ready || !instr_queue_ready || halt_frontend_i;
   assign scaiev_fetch_isFlushing = icache_dreq_o.kill_s1;
-  assign scaiev_fetch_isReplaying = replay;
+  //If the fetch packet from a SCAIE-V ZOL jump destination is replayed,
+  // SCAIE-V will revert the ISAX state to pre-jump (based on the flush signal),
+  // while the core retains the post-jump PC.
+  //Thus, on a full replay, SCAIE-V needs to present the pre-jump PC as RdPC to the ISAX again,
+  // so the ISAX can redo its state update with the same inputs.
+  //Partial replays (on a ZOL jump target) imply that the state updates of the jump are retained,
+  // since SCAIE-V attaches those updates to the first instruction at the jump destination.
+  assign scaiev_fetch_isReplaying = replay && !replay_partial;
   `endif
 
   // -------------------
@@ -745,6 +753,7 @@ module frontend
       .consumed_o         (instr_queue_consumed),
       .ready_o            (instr_queue_ready),
       .replay_o           (replay),
+      .replay_partial_o   (replay_partial),
       .replay_addr_o      (replay_addr),
       .fetch_entry_o      (fetch_entry_o),         // to back-end
       .fetch_entry_valid_o(fetch_entry_valid_o),   // to back-end

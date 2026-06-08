@@ -81,6 +81,8 @@ module instr_queue
     input ariane_pkg::cf_t [CVA6Cfg.INSTR_PER_FETCH-1:0] cf_type_i,
     // Replay instruction because one of the FIFO was full - FRONTEND
     output logic replay_o,
+    // Whether only part of a fetch is to be replayed - FRONTEND
+    output logic replay_partial_o,
     // Address at which to replay the fetch - FRONTEND
     output logic [CVA6Cfg.VLEN-1:0] replay_addr_o,
     // Handshake’s data with ID_STAGE - ID_STAGE
@@ -336,8 +338,10 @@ module instr_queue
     // if we successfully pushed some instructions we can output the next instruction
     // which we didn't manage to push
     assign replay_addr_o = (address_overflow) ? addr_i[0] : addr_i[shamt];
+    assign replay_partial_o = !address_overflow && (shamt != 0);
   end else begin : gen_replay_addr_o_without_C
     assign replay_addr_o = addr_i[0];
+    assign replay_partial_o = 1'b0;
   end
 
   // ----------------------
